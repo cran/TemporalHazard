@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.10.0">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Migrating from SAS HAZARD to TemporalHazard</title>
+<style>
+
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+width: 0.8em;
+margin: 0 0.8em 0.2em -1em;  vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+}
+pre.numberSource { margin-left: 3em; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+</style>
+</head>
+
+<body>
+
+
+<header id="title-block-header">
+<h1 class="title">Migrating from SAS HAZARD to TemporalHazard</h1>
+
+</header>
+
+
+<div class="cell">
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(TemporalHazard)</span></code></pre></div>
+</div>
+<h2 id="overview">Overview</h2>
+<p>If you’ve been running multiphase hazard analyses in SAS HAZARD — the macro suite that wraps the C HAZARD binary written by Blackstone, Naftel, and Turner at UAB — this vignette is the bridge to running the same analyses in R. Every SAS <code>HAZARD</code> statement, every common macro option, and every output field maps to something in <code>TemporalHazard</code>; this document spells out the correspondences and flags the small handful of features the R port doesn’t yet cover.</p>
+<p>The mapping is faithful, not literal. SAS HAZARD is a step-driven DSL: you write a <code>PROC HAZARD</code> block with separate <code>TIME</code>, <code>EVENT</code>, <code>PARMS</code>, <code>EARLY</code>, <code>CONSTANT</code>, and <code>SELECTION</code> statements, and the macro assembles them into a binary call. R is function-driven: you write a single <code>hazard()</code> call with named arguments. The conceptual pieces are identical; the syntactic ergonomics differ. Use this vignette to translate an existing SAS analysis, or as a reference when comparing the package’s output against a SAS HAZARD reference fit for parity testing.</p>
+<p>The full formal argument mapping table is available programmatically and ships with the package — handy when you want to grep for a specific SAS parameter name and find its R equivalent without scrolling through the prose below:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>  TemporalHazard<span class="sc">::</span><span class="fu">hzr_argument_mapping</span>(),</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">caption =</span> <span class="st">&quot;Formal argument map: SAS HAZARD/C → hazard()&quot;</span>,</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">col.names =</span> <span class="fu">c</span>(</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;SAS Statement&quot;</span>, <span class="st">&quot;Legacy Input&quot;</span>, <span class="st">&quot;C Concept&quot;</span>,</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;R Parameter&quot;</span>, <span class="st">&quot;Required&quot;</span>, <span class="st">&quot;Expected Type&quot;</span>,</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;Transform Rule&quot;</span>, <span class="st">&quot;Status&quot;</span>, <span class="st">&quot;Notes&quot;</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<div class="cell-output-display">
+<table class="caption-top">
+<caption>Formal argument map: SAS HAZARD/C → hazard()</caption>
+<colgroup>
+<col style="width: 4%">
+<col style="width: 7%">
+<col style="width: 8%">
+<col style="width: 8%">
+<col style="width: 2%">
+<col style="width: 8%">
+<col style="width: 26%">
+<col style="width: 3%">
+<col style="width: 30%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">SAS Statement</th>
+<th style="text-align: left;">Legacy Input</th>
+<th style="text-align: left;">C Concept</th>
+<th style="text-align: left;">R Parameter</th>
+<th style="text-align: left;">Required</th>
+<th style="text-align: left;">Expected Type</th>
+<th style="text-align: left;">Transform Rule</th>
+<th style="text-align: left;">Status</th>
+<th style="text-align: left;">Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">HAZARD</td>
+<td style="text-align: left;">TIME variable</td>
+<td style="text-align: left;">obs time array</td>
+<td style="text-align: left;">time</td>
+<td style="text-align: left;">TRUE</td>
+<td style="text-align: left;">numeric vector</td>
+<td style="text-align: left;">pass through as numeric</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Core observation time input.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">HAZARD</td>
+<td style="text-align: left;">EVENT/censor variable</td>
+<td style="text-align: left;">event indicator array</td>
+<td style="text-align: left;">status</td>
+<td style="text-align: left;">TRUE</td>
+<td style="text-align: left;">numeric/logical vector</td>
+<td style="text-align: left;">coerce to numeric 0/1</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Event indicator currently retained as numeric in object<span class="math inline"><em>d</em><em>a</em><em>t</em><em>a</em></span>status.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">HAZARD</td>
+<td style="text-align: left;">X covariate block</td>
+<td style="text-align: left;">design matrix</td>
+<td style="text-align: left;">x</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">numeric matrix or data.frame</td>
+<td style="text-align: left;">data.frame -&gt; data.matrix</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Future versions will support richer design encoding helpers.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">HAZARD</td>
+<td style="text-align: left;">initial parameters</td>
+<td style="text-align: left;">parameter vector</td>
+<td style="text-align: left;">theta</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">numeric vector</td>
+<td style="text-align: left;">length must equal ncol(x) when x is present</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Used by predict.hazard as coefficient vector.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">HAZARD</td>
+<td style="text-align: left;">baseline distribution</td>
+<td style="text-align: left;">phase distribution selector</td>
+<td style="text-align: left;">dist</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">character scalar</td>
+<td style="text-align: left;">normalized lower-case label</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Current default is ‘weibull’; more options planned.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">HAZARD</td>
+<td style="text-align: left;">control options</td>
+<td style="text-align: left;">optimizer/control struct</td>
+<td style="text-align: left;">control</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">named list</td>
+<td style="text-align: left;">stored in spec$control</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Control list is stored and reserved for optimizer parity.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">HAZARD</td>
+<td style="text-align: left;">additional legacy options</td>
+<td style="text-align: left;">misc legacy switches</td>
+<td style="text-align: left;">…</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">named arguments</td>
+<td style="text-align: left;">stored in legacy_args for parity</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Supports legacy-style pass-through options during migration.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">TIME</td>
+<td style="text-align: left;">t</td>
+<td style="text-align: left;">time vector</td>
+<td style="text-align: left;">time</td>
+<td style="text-align: left;">TRUE</td>
+<td style="text-align: left;">numeric vector</td>
+<td style="text-align: left;">pass through</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Canonical SAS migration uses TIME= mapping.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">EVENT</td>
+<td style="text-align: left;">status</td>
+<td style="text-align: left;">event vector</td>
+<td style="text-align: left;">status</td>
+<td style="text-align: left;">TRUE</td>
+<td style="text-align: left;">numeric/logical vector</td>
+<td style="text-align: left;">coerce to numeric</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Canonical SAS migration uses EVENT= mapping.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">PARMS</td>
+<td style="text-align: left;">theta0</td>
+<td style="text-align: left;">starting coef</td>
+<td style="text-align: left;">theta</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">numeric vector</td>
+<td style="text-align: left;">map PARMS/INITIAL to theta</td>
+<td style="text-align: left;">planned</td>
+<td style="text-align: left;">SAS PARMS syntax parser not yet implemented.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">DIST</td>
+<td style="text-align: left;">dist</td>
+<td style="text-align: left;">dist selector</td>
+<td style="text-align: left;">dist</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">character scalar</td>
+<td style="text-align: left;">map DIST= to dist</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">SAS DIST keyword maps directly to dist.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">HAZARD</td>
+<td style="text-align: left;">phases (3-phase structure)</td>
+<td style="text-align: left;">3-phase Early/Const/Late</td>
+<td style="text-align: left;">phases (list of hzr_phase())</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">list of hzr_phase objects</td>
+<td style="text-align: left;">list(early=hzr_phase(‘cdf’,…), constant=hzr_phase(‘constant’), late=hzr_phase(‘g3’,…))</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Use dist=‘multiphase’ with phases argument. N-phase generalization of legacy 3-phase model.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">HAZARD</td>
+<td style="text-align: left;">MU_1, MU_2, MU_3</td>
+<td style="text-align: left;">per-phase scale factors</td>
+<td style="text-align: left;">mu (via exp(log_mu) in theta)</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">numeric (per-phase)</td>
+<td style="text-align: left;">exp(alpha_j) in internal parameterization; estimated on log scale</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Each phase has its own scale mu_j(x) = exp(alpha_j + x*beta_j). Starting value via hzr_phase().</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">G1</td>
+<td style="text-align: left;">THALF / RHO (early)</td>
+<td style="text-align: left;">early half-life</td>
+<td style="text-align: left;">hzr_phase(t_half=)</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">positive scalar</td>
+<td style="text-align: left;">maps directly to hzr_phase(t_half=) starting value</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Half-life: time at which G(t_half) = 0.5. Same concept as SAS RHO/THALF.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">G1</td>
+<td style="text-align: left;">NU (early)</td>
+<td style="text-align: left;">early time exponent</td>
+<td style="text-align: left;">hzr_phase(nu=)</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">numeric scalar</td>
+<td style="text-align: left;">maps directly to hzr_phase(nu=) starting value</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Time exponent controlling rate dynamics. Same parameter name as SAS early NU.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">G1</td>
+<td style="text-align: left;">M (early)</td>
+<td style="text-align: left;">early shape</td>
+<td style="text-align: left;">hzr_phase(m=)</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">numeric scalar</td>
+<td style="text-align: left;">maps directly to hzr_phase(m=) starting value</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Shape exponent controlling distributional form. Same parameter name as SAS early M.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">G1</td>
+<td style="text-align: left;">DELTA (early)</td>
+<td style="text-align: left;">early time transform</td>
+<td style="text-align: left;">(absorbed by decompos)</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">numeric scalar</td>
+<td style="text-align: left;">time transform B(t) = (exp(delta*t)-1)/delta absorbed into decompos shape</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">The C DELTA controlled B(t) = (exp(delta*t)-1)/delta. This transform is absorbed by decompos().</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">G2</td>
+<td style="text-align: left;">G2 constant phase</td>
+<td style="text-align: left;">constant hazard rate phase</td>
+<td style="text-align: left;">hzr_phase(‘constant’)</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">hzr_phase(‘constant’)</td>
+<td style="text-align: left;">hzr_phase(‘constant’) with no shape parameters</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Flat background rate. No shape parameters estimated. SAS G2 equivalent.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">G3</td>
+<td style="text-align: left;">TAU (late)</td>
+<td style="text-align: left;">late G3 scale</td>
+<td style="text-align: left;">hzr_phase(‘g3’, tau=)</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">positive scalar</td>
+<td style="text-align: left;">maps directly to hzr_phase(‘g3’, tau=) for late phase</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Late-phase G3 scale parameter. Maps directly to hzr_phase(‘g3’, tau=).</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">G3</td>
+<td style="text-align: left;">GAMMA (late)</td>
+<td style="text-align: left;">late G3 time exponent</td>
+<td style="text-align: left;">hzr_phase(‘g3’, gamma=)</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">numeric scalar</td>
+<td style="text-align: left;">maps directly to hzr_phase(‘g3’, gamma=) for late phase</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Late-phase G3 time exponent. Maps directly to hzr_phase(‘g3’, gamma=).</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">G3</td>
+<td style="text-align: left;">ALPHA (late)</td>
+<td style="text-align: left;">late G3 shape</td>
+<td style="text-align: left;">hzr_phase(‘g3’, alpha=)</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">numeric scalar</td>
+<td style="text-align: left;">maps directly to hzr_phase(‘g3’, alpha=) for late phase</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Late-phase G3 shape parameter. alpha=0 gives exponential case. Maps directly to hzr_phase(‘g3’, alpha=).</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">G3</td>
+<td style="text-align: left;">ETA (late)</td>
+<td style="text-align: left;">late G3 outer exponent</td>
+<td style="text-align: left;">hzr_phase(‘g3’, eta=)</td>
+<td style="text-align: left;">FALSE</td>
+<td style="text-align: left;">numeric scalar</td>
+<td style="text-align: left;">maps directly to hzr_phase(‘g3’, eta=) for late phase</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Late-phase G3 outer exponent. Maps directly to hzr_phase(‘g3’, eta=).</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<hr>
+<h2 id="statement-by-statement-mapping">Statement-by-statement mapping</h2>
+<p>A SAS HAZARD analysis is a stack of statements inside a <code>PROC HAZARD</code> block. We walk through them in roughly the order they appear in a typical analysis script, showing the SAS form and the corresponding R call.</p>
+<h3 id="proc-hazard-data"><code>PROC HAZARD DATA=</code></h3>
+<p>The procedure-level statement that names the dataset and sets global options. The <code>NOCOV</code> / <code>NOCOR</code> flags suppress covariance and correlation output; <code>CONDITION=</code> is a tolerance switch for the convergence check.</p>
+<pre class="sas"><code>PROC HAZARD DATA=AVCS NOCOV NOCOR CONDITION=14;</code></pre>
+<p>Maps to <code>hazard()</code> <code>control</code> list:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">hazard</span>(</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  ...,</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">control =</span> <span class="fu">list</span>(</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    <span class="at">nocov      =</span> <span class="cn">TRUE</span>,   <span class="co"># suppress covariance output</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    <span class="at">nocor      =</span> <span class="cn">TRUE</span>,   <span class="co"># suppress correlation output</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    <span class="at">condition  =</span> <span class="dv">14</span>      <span class="co"># CONDITION= switch</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<p>Additional <code>PROC HAZARD</code> options with no direct R equivalent yet are passed through <code>...</code> as named arguments and stored in <code>fit$legacy_args</code>.</p>
+<hr>
+<h3 id="time"><code>TIME</code></h3>
+<p>Names the follow-up time variable. In SAS HAZARD this is a separate statement; in R it’s the first argument to <code>Surv()</code> inside the formula.</p>
+<pre class="sas"><code>TIME INT_DEAD;</code></pre>
+<p>Maps directly to <code>time</code>:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">hazard</span>(</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">time   =</span> avcs<span class="sc">$</span>INT_DEAD,</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>  ...</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<ul>
+<li>Must be a non-negative numeric vector in the same time unit as the original analysis (months, in the AVC example).</li>
+<li>Missing values are not permitted.</li>
+</ul>
+<hr>
+<h3 id="event"><code>EVENT</code></h3>
+<p>Names the event-indicator variable. Like <code>TIME</code>, this is a separate statement in SAS HAZARD but enters the R formula through <code>Surv()</code>.</p>
+<pre class="sas"><code>EVENT DEAD;</code></pre>
+<p>Maps to <code>status</code>:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">hazard</span>(</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">status =</span> avcs<span class="sc">$</span>DEAD,   <span class="co"># 1 = event, 0 = censored</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>  ...</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<ul>
+<li><code>TemporalHazard</code> coerces <code>status</code> to <code>numeric</code>; logical vectors are also accepted.</li>
+<li>The HAZARD convention uses <code>1</code> = occurred, <code>0</code> = censored/alive at last contact.</li>
+</ul>
+<hr>
+<h3 id="parms"><code>PARMS</code></h3>
+<p>Supplies starting values for the optimizer and flags which parameters to hold fixed (<code>FIXM</code>, <code>FIXMU</code>, etc.). The starting values matter — for the multiphase optimizer in particular, a poor starting point can park the fit at a local minimum well away from the global MLE.</p>
+<pre class="sas"><code>PARMS MUE=0.3504743 THALF=0.1905077 NU=1.437416 M=1 FIXM
+      MUC=4.391673E-07;</code></pre>
+<p>Maps to <code>theta</code> (coefficient/parameter vector) and <code>control</code> (fix flags):</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">hazard</span>(</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">theta   =</span> <span class="fu">c</span>(<span class="at">MUE =</span> <span class="fl">0.3504743</span>, <span class="at">THALF =</span> <span class="fl">0.1905077</span>, <span class="at">NU =</span> <span class="fl">1.437416</span>,</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>              <span class="at">M =</span> <span class="dv">1</span>,           <span class="at">MUC   =</span> <span class="fl">4.391673e-07</span>),</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">control =</span> <span class="fu">list</span>(</span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    <span class="at">fix =</span> <span class="fu">c</span>(<span class="st">&quot;M&quot;</span>)   <span class="co"># FIXM → freeze M during optimization</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>  ),</span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>  ...</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<blockquote>
+<p><strong>Note:</strong> Full SAS <code>PARMS</code> syntax is not mirrored one-for-one in the public API. In the current package, supply the parameter vector directly via <code>theta</code> and record fixed-parameter intent in <code>control$fix</code>. The legacy parity helpers do generate SAS-style control text when comparing against the historical binaries.</p>
+</blockquote>
+<hr>
+<h3 id="early-and-constant-covariate-blocks"><code>EARLY</code> and <code>CONSTANT</code> covariate blocks</h3>
+<p>These statements assign covariates to specific phases. In SAS HAZARD each block lists the covariates that affect that phase and their starting coefficients. Covariates can appear in multiple blocks with different starting values — same column, different phase-specific effect.</p>
+<pre class="sas"><code>EARLY  AGE=-0.03205774, COM_IV=1.336675, MAL=0.6872028,
+       OPMOS=-0.01963377, OP_AGE=0.0002086689, STATUS=0.5169533;
+CONSTANT INC_SURG=1.375285, ORIFICE=3.11765, STATUS=1.054988;</code></pre>
+<p>In HAZARD, <code>EARLY</code> and <code>CONSTANT</code> define phase-specific covariate coefficients. In <code>TemporalHazard</code> these are unified into a single design matrix <code>x</code> and coefficient vector <code>theta</code> during M1. Phase assignment will be formalised in M2 when the multi-phase likelihood is implemented.</p>
+<p><strong>Current convention (M1):</strong> combine all covariates into <code>x</code> and supply the corresponding starting coefficients in <code>theta</code>.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Build design matrix from the AVC data set</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>X <span class="ot">&lt;-</span> <span class="fu">data.matrix</span>(avcs[, <span class="fu">c</span>(<span class="st">&quot;AGE&quot;</span>, <span class="st">&quot;COM_IV&quot;</span>, <span class="st">&quot;MAL&quot;</span>, <span class="st">&quot;OPMOS&quot;</span>, <span class="st">&quot;OP_AGE&quot;</span>,</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>                           <span class="st">&quot;STATUS&quot;</span>, <span class="st">&quot;INC_SURG&quot;</span>, <span class="st">&quot;ORIFICE&quot;</span>)])</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Starting values from SAS EARLY + CONSTANT blocks combined</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>theta_start <span class="ot">&lt;-</span> <span class="fu">c</span>(</span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">AGE      =</span> <span class="sc">-</span><span class="fl">0.03205774</span>,</span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">COM_IV   =</span>  <span class="fl">1.336675</span>,</span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">MAL      =</span>  <span class="fl">0.6872028</span>,</span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>  <span class="at">OPMOS    =</span> <span class="sc">-</span><span class="fl">0.01963377</span>,</span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">OP_AGE   =</span>  <span class="fl">0.0002086689</span>,</span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a>  <span class="at">STATUS   =</span>  <span class="fl">0.5169533</span>,   <span class="co"># EARLY phase coefficient</span></span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a>  <span class="at">INC_SURG =</span>  <span class="fl">1.375285</span>,</span>
+<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a>  <span class="at">ORIFICE  =</span>  <span class="fl">3.11765</span></span>
+<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">hazard</span>(</span>
+<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a>  <span class="at">time   =</span> avcs<span class="sc">$</span>INT_DEAD,</span>
+<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a>  <span class="at">status =</span> avcs<span class="sc">$</span>DEAD,</span>
+<span id="cb12-20"><a href="#cb12-20" aria-hidden="true" tabindex="-1"></a>  <span class="at">x      =</span> X,</span>
+<span id="cb12-21"><a href="#cb12-21" aria-hidden="true" tabindex="-1"></a>  <span class="at">theta  =</span> theta_start,</span>
+<span id="cb12-22"><a href="#cb12-22" aria-hidden="true" tabindex="-1"></a>  <span class="at">dist   =</span> <span class="st">&quot;weibull&quot;</span></span>
+<span id="cb12-23"><a href="#cb12-23" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<hr>
+<h3 id="selection"><code>SELECTION</code></h3>
+<p>Triggers stepwise covariate selection inside the hazard fit. <code>SLE</code> is the significance level for entry, <code>SLS</code> for staying. SAS HAZARD embedded this in the same <code>PROC HAZARD</code> call; in R the stepwise loop is a separate <code>hzr_stepwise()</code> function that wraps a fitted <code>hazard()</code> object.</p>
+<pre class="sas"><code>SELECTION SLE=0.2 SLS=0.1;</code></pre>
+<p><code>TemporalHazard</code> now ships <code>hzr_stepwise()</code>, which implements forward, backward, and two-way stepwise selection with SAS-style SLENTRY / SLSTAY thresholds, phase-specific entry for multiphase models, and a MOVE oscillation guard. FAST-screening (Lawless-Singhal approximate Wald updates) is not yet implemented; every candidate currently gets a full refit. See <code>?hzr_stepwise</code> for the full option list.</p>
+<hr>
+<h2 id="sas-macro-equivalents">SAS macro equivalents</h2>
+<p>The legacy SAS distribution ships a suite of macros for nonparametric baselines, goodness-of-fit diagnostics, bootstrap inference, and variable calibration that sit alongside <code>PROC HAZARD</code>. Each has an R equivalent in <code>TemporalHazard</code>:</p>
+<table class="caption-top">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">SAS macro</th>
+<th style="text-align: left;">R function</th>
+<th style="text-align: left;">Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;"><code>kaplan.sas</code></td>
+<td style="text-align: left;"><code>hzr_kaplan()</code></td>
+<td style="text-align: left;">KM survival with logit-transformed exact CL</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;"><code>nelsonl.sas</code> / <code>nelsont.sas</code></td>
+<td style="text-align: left;"><code>hzr_nelson()</code></td>
+<td style="text-align: left;">Nelson cumulative hazard with lognormal CL</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;"><code>hazplot.sas</code></td>
+<td style="text-align: left;"><code>hzr_gof()</code></td>
+<td style="text-align: left;">Parametric vs. KM overlay + CoE goodness-of-fit</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;"><code>deciles.hazard.sas</code></td>
+<td style="text-align: left;"><code>hzr_deciles()</code></td>
+<td style="text-align: left;">Decile-of-risk calibration + chi-square GOF</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;"><code>logit.sas</code> / <code>logitgr.sas</code></td>
+<td style="text-align: left;"><code>hzr_calibrate()</code></td>
+<td style="text-align: left;">Quantile-group calibration (logit / Gompertz / Cox link)</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;"><code>bootstrap.hazard.sas</code></td>
+<td style="text-align: left;"><code>hzr_bootstrap()</code></td>
+<td style="text-align: left;">Bootstrap resampling + summary</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;"><code>markov.sas</code></td>
+<td style="text-align: left;"><code>hzr_competing_risks()</code></td>
+<td style="text-align: left;">Aalen-Johansen competing-risks incidence</td>
+</tr>
+</tbody>
+</table>
+<p>Minimal illustrations on the AVC dataset follow. The <code>vignette(&quot;inference-diagnostics&quot;)</code> walkthrough builds these into a full analysis workflow.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(survival)</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="fu">data</span>(avc)</span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>avc <span class="ot">&lt;-</span> <span class="fu">na.omit</span>(avc)</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Base parametric fit for downstream diagnostics</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">hazard</span>(</span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>  <span class="fu">Surv</span>(int_dead, dead) <span class="sc">~</span> age <span class="sc">+</span> status <span class="sc">+</span> mal <span class="sc">+</span> com_iv,</span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">data =</span> avc, <span class="at">dist =</span> <span class="st">&quot;weibull&quot;</span>,</span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>  <span class="at">theta =</span> <span class="fu">c</span>(<span class="at">mu =</span> <span class="fl">0.2</span>, <span class="at">nu =</span> <span class="dv">1</span>, <span class="fu">rep</span>(<span class="dv">0</span>, <span class="dv">4</span>)),</span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>  <span class="at">fit =</span> <span class="cn">TRUE</span>, <span class="at">control =</span> <span class="fu">list</span>(<span class="at">maxit =</span> <span class="dv">500</span>)</span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb15"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>km <span class="ot">&lt;-</span> <span class="fu">hzr_kaplan</span>(<span class="at">time =</span> avc<span class="sc">$</span>int_dead, <span class="at">status =</span> avc<span class="sc">$</span>dead)</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(km, <span class="dv">4</span>)</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Kaplan-Meier estimate with logit confidence limits</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Events: 14  | Time points: 4 </span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Survival range: 0.9541 to 0.9836 </span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; RMST at last event: 0.016 </span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;         time n_risk n_event n_censor survival std_err cl_lower cl_upper cumhaz</span></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.001368954    305       5        0   0.9836  0.0073   0.9612   0.9932 0.0165</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.002737907    300       2        0   0.9770  0.0086   0.9527   0.9890 0.0232</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.008213721    298       2        0   0.9705  0.0097   0.9443   0.9846 0.0300</span></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.016427440    296       5        0   0.9541  0.0120   0.9240   0.9726 0.0470</span></span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;   hazard density   life</span></span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  12.0744 11.9752 0.0014</span></span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;   4.8862  4.7901 0.0027</span></span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;   1.2298  1.1975 0.0081</span></span>
+<span id="cb15-17"><a href="#cb15-17" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;   2.0741  1.9959 0.0160</span></span></code></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb16"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>nel <span class="ot">&lt;-</span> <span class="fu">hzr_nelson</span>(<span class="at">time =</span> avc<span class="sc">$</span>int_dead, <span class="at">event =</span> avc<span class="sc">$</span>dead)</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(nel, <span class="dv">4</span>)</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Nelson cumulative hazard estimate with lognormal CL</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Events: 14  | Time points: 4 </span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;         time n_risk n_event weight_sum cumhaz std_err cl_lower cl_upper  hazard</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.001368954    305       5          5 0.0164  0.0033   0.0109   0.0237 11.9752</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.002737907    300       2          2 0.0231  0.0047   0.0153   0.0335  4.8699</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.008213721    298       2          2 0.0298  0.0057   0.0201   0.0425  1.2256</span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.016427440    296       5          5 0.0467  0.0067   0.0350   0.0610  2.0565</span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  cum_events</span></span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;           5</span></span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;           7</span></span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;           9</span></span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          14</span></span></code></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb17"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(<span class="fu">hzr_gof</span>(fit), <span class="dv">4</span>)</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Goodness-of-fit: observed vs. expected events</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Distribution: weibull  | n = 305 </span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Total observed events: 68 </span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Total expected events: 50.433 </span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Final residual (E - O): -17.567 </span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Conservation ratio (E/O): 0.742 </span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Use plot columns: time, km_surv, par_surv, cum_observed, cum_expected, residual</span></span></code></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb18"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="fu">hzr_deciles</span>(fit, <span class="at">time =</span> <span class="dv">120</span>, <span class="at">groups =</span> <span class="dv">10</span>)</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Decile-of-risk calibration at time = 120 </span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Included 86 observations (excluded 219 censored before horizon).</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; 10 groups, 66 observed events, 33.7 expected</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  group n events expected observed_rate expected_rate chi_sq  p_value</span></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      1 8      1    0.458         0.125        0.0573  0.641 0.424000</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      2 9      2    0.973         0.222        0.1080  1.080 0.298000</span></span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      3 8      5    1.410         0.625        0.1760  9.170 0.002460</span></span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      4 9      7    2.310         0.778        0.2570  9.530 0.002030</span></span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      5 9      9    2.890         1.000        0.3210 12.900 0.000321</span></span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      6 8      7    3.300         0.875        0.4120  4.160 0.041400</span></span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      7 9      9    4.200         1.000        0.4670  5.480 0.019200</span></span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      8 8      8    4.300         1.000        0.5380  3.180 0.074700</span></span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      9 9      9    6.140         1.000        0.6820  1.330 0.249000</span></span>
+<span id="cb18-16"><a href="#cb18-16" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     10 9      9    7.690         1.000        0.8540  0.224 0.636000</span></span>
+<span id="cb18-17"><a href="#cb18-17" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  mean_survival mean_cumhaz</span></span>
+<span id="cb18-18"><a href="#cb18-18" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          0.943      0.0591</span></span>
+<span id="cb18-19"><a href="#cb18-19" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          0.892      0.1150</span></span>
+<span id="cb18-20"><a href="#cb18-20" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          0.824      0.1940</span></span>
+<span id="cb18-21"><a href="#cb18-21" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          0.743      0.2970</span></span>
+<span id="cb18-22"><a href="#cb18-22" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          0.679      0.3870</span></span>
+<span id="cb18-23"><a href="#cb18-23" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          0.588      0.5320</span></span>
+<span id="cb18-24"><a href="#cb18-24" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          0.533      0.6300</span></span>
+<span id="cb18-25"><a href="#cb18-25" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          0.462      0.7720</span></span>
+<span id="cb18-26"><a href="#cb18-26" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          0.318      1.1700</span></span>
+<span id="cb18-27"><a href="#cb18-27" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;          0.146      2.0100</span></span>
+<span id="cb18-28"><a href="#cb18-28" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-29"><a href="#cb18-29" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Overall: chi-sq = 47.7 on 9 df, p = 2.86e-07</span></span></code></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb19"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="fu">hzr_calibrate</span>(avc<span class="sc">$</span>age, avc<span class="sc">$</span>dead, <span class="at">groups =</span> <span class="dv">10</span>, <span class="at">link =</span> <span class="st">&quot;logit&quot;</span>)</span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Variable calibration (logit link, 10 groups)</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  group  n events    mean     min     max  prob link_value</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      1 30     11   3.519   1.051   5.388 0.367     -0.547</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      2 31     11   8.665   5.421  11.532 0.355     -0.598</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      3 30     13  15.194  11.631  18.497 0.433     -0.268</span></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      4 31     11  23.077  18.990  27.828 0.355     -0.598</span></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      5 30      7  43.544  28.124  57.167 0.233     -1.190</span></span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      6 31      3  72.066  59.730  86.408 0.097     -2.234</span></span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      7 30      2 101.154  86.507 117.522 0.067     -2.639</span></span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      8 31      3 162.739 121.169 203.733 0.097     -2.234</span></span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;      9 30      4 247.051 205.343 297.140 0.133     -1.872</span></span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     10 31      3 530.623 324.573 790.981 0.097     -2.234</span></span></code></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb20"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">1</span>)</span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="fu">hzr_bootstrap</span>(fit, <span class="at">n_boot =</span> <span class="dv">20</span>)  <span class="co"># small for vignette build</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Bootstrap inference for hazard model</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Replicates: 20 successful, 0 failed</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  parameter  n pct    mean     sd     min    max ci_lower ci_upper</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;         mu 20 100  0.0000 0.0000  0.0000 0.0000   0.0000   0.0000</span></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;         nu 20 100  0.2446 0.0170  0.2222 0.2866   0.2229   0.2798</span></span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;        age 20 100 -0.0029 0.0016 -0.0070 0.0002  -0.0061  -0.0003</span></span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     status 20 100  0.7035 0.2262  0.3252 1.0922   0.3475   1.0776</span></span>
+<span id="cb20-11"><a href="#cb20-11" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;        mal 20 100  0.4622 0.3263 -0.2049 0.9676  -0.1302   0.9326</span></span>
+<span id="cb20-12"><a href="#cb20-12" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     com_iv 20 100  0.7395 0.3402  0.0776 1.3490   0.1436   1.3182</span></span></code></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb21"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="fu">data</span>(valves)</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Synthesize a competing-risks indicator for illustration.</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>valves<span class="sc">$</span>ev <span class="ot">&lt;-</span> <span class="fu">with</span>(valves, <span class="fu">ifelse</span>(dead <span class="sc">==</span> <span class="dv">1</span>, <span class="dv">1</span>L,</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>                                   <span class="fu">ifelse</span>(pve <span class="sc">==</span> <span class="dv">1</span>,  <span class="dv">2</span>L,</span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>                                   <span class="fu">ifelse</span>(reop <span class="sc">==</span> <span class="dv">1</span>, <span class="dv">3</span>L, <span class="dv">0</span>L))))</span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(<span class="fu">hzr_competing_risks</span>(valves<span class="sc">$</span>int_dead, valves<span class="sc">$</span>ev), <span class="dv">4</span>)</span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Competing risks cumulative incidence</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Event types: 3  | Time points: 4 </span></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Final survival: 0.9941 </span></span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Final incid_1 : 0.0059 </span></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Final incid_2 : 0 </span></span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Final incid_3 : 0 </span></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     time n_risk n_event_1 n_event_2 n_event_3 n_censor   surv incid_1 incid_2</span></span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.00068   1533         1         0         0        0 0.9993  0.0007       0</span></span>
+<span id="cb21-16"><a href="#cb21-16" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.00137   1532         4         0         0        0 0.9967  0.0033       0</span></span>
+<span id="cb21-17"><a href="#cb21-17" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.00171   1528         1         0         0        0 0.9961  0.0039       0</span></span>
+<span id="cb21-18"><a href="#cb21-18" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  0.00205   1527         3         0         0        0 0.9941  0.0059       0</span></span>
+<span id="cb21-19"><a href="#cb21-19" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  incid_3 se_surv   se_1 se_2 se_3</span></span>
+<span id="cb21-20"><a href="#cb21-20" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;        0  0.0007 0.0007    0    0</span></span>
+<span id="cb21-21"><a href="#cb21-21" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;        0  0.0015 0.0015    0    0</span></span>
+<span id="cb21-22"><a href="#cb21-22" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;        0  0.0016 0.0016    0    0</span></span>
+<span id="cb21-23"><a href="#cb21-23" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;        0  0.0020 0.0020    0    0</span></span></code></pre></div>
+</div>
+<hr>
+<h2 id="full-worked-example-avc-death-after-repair">Full worked example: AVC death after repair</h2>
+<p>Statement-by-statement mapping is fine for reference, but the full gestalt only lands when you see a complete SAS HAZARD analysis and its R translation side by side. The example below is the final multivariable model from <code>examples/hm.death.AVC.sas</code> in the reference C repository — death after atrioventricular canal repair, two-phase model with covariates assigned to specific phases. It’s the canonical “this is what a real SAS HAZARD analysis looks like” specimen.</p>
+<h3 id="sas-original">SAS (original)</h3>
+<p>The original SAS code, exactly as it appears in the reference distribution. Notice how the statements stack inside a single <code>%HAZARD()</code> macro call.</p>
+<pre class="sas"><code>%HAZARD(
+PROC HAZARD DATA=AVCS P CONSERVE OUTHAZ=OUTEST CONDITION=14 QUASI;
+     TIME INT_DEAD;
+     EVENT DEAD;
+     PARMS MUE=0.3504743 THALF=0.1905077 NU=1.437416 M=1 FIXM
+           MUC=4.391673E-07;
+     EARLY   AGE=-0.03205774, COM_IV=1.336675,  MAL=0.6872028,
+             OPMOS=-0.01963377, OP_AGE=0.0002086689, STATUS=0.5169533;
+     CONSTANT INC_SURG=1.375285, ORIFICE=3.11765, STATUS=1.054988;
+);</code></pre>
+<h3 id="r-equivalent-current-runnable-translation-pattern">R equivalent (current runnable translation pattern)</h3>
+<p>The same model in <code>TemporalHazard</code>. Every SAS statement above has a corresponding R argument here: <code>TIME</code> and <code>EVENT</code> collapse into <code>Surv(int_dead, dead)</code> on the left of the formula; the global covariate list goes on the right; the <code>PARMS</code> starting values become the <code>theta</code> vector; phase-specific assignments use the <code>formula</code> argument inside each <code>hzr_phase()</code>; <code>FIXM</code> becomes <code>fixed = &quot;shapes&quot;</code> (or a subset of shape names). The line-by-line correspondence is the point — once you’ve translated one analysis this way, the pattern carries to every other.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb23"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Assumed: avcs is a data.frame read from the AVC flat file</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="co"># (same variables as the SAS DATA step)</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>avcs <span class="ot">&lt;-</span> avcs <span class="sc">|&gt;</span></span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>  <span class="fu">transform</span>(</span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>    <span class="at">LN_AGE   =</span> <span class="fu">log</span>(AGE),</span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>    <span class="at">LN_OPMOS =</span> <span class="fu">log</span>(OPMOS),</span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>    <span class="at">LN_INC   =</span> <span class="fu">ifelse</span>(<span class="fu">is.na</span>(INC_SURG), <span class="cn">NA</span>, <span class="fu">log</span>(INC_SURG <span class="sc">+</span> <span class="dv">1</span>)),</span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a>    <span class="at">LN_NYHA  =</span> <span class="fu">log</span>(STATUS)</span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a><span class="co"># Replace missing INC_SURG with column mean (mirrors PROC STANDARD REPLACE)</span></span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a>avcs<span class="sc">$</span>INC_SURG[<span class="fu">is.na</span>(avcs<span class="sc">$</span>INC_SURG)] <span class="ot">&lt;-</span> <span class="fu">mean</span>(avcs<span class="sc">$</span>INC_SURG, <span class="at">na.rm =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a>X <span class="ot">&lt;-</span> <span class="fu">data.matrix</span>(avcs[, <span class="fu">c</span>(<span class="st">&quot;AGE&quot;</span>, <span class="st">&quot;COM_IV&quot;</span>, <span class="st">&quot;MAL&quot;</span>, <span class="st">&quot;OPMOS&quot;</span>, <span class="st">&quot;OP_AGE&quot;</span>,</span>
+<span id="cb23-16"><a href="#cb23-16" aria-hidden="true" tabindex="-1"></a>                           <span class="st">&quot;STATUS&quot;</span>, <span class="st">&quot;INC_SURG&quot;</span>, <span class="st">&quot;ORIFICE&quot;</span>)])</span>
+<span id="cb23-17"><a href="#cb23-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-18"><a href="#cb23-18" aria-hidden="true" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">hazard</span>(</span>
+<span id="cb23-19"><a href="#cb23-19" aria-hidden="true" tabindex="-1"></a>  <span class="at">time    =</span> avcs<span class="sc">$</span>INT_DEAD,</span>
+<span id="cb23-20"><a href="#cb23-20" aria-hidden="true" tabindex="-1"></a>  <span class="at">status  =</span> avcs<span class="sc">$</span>DEAD,</span>
+<span id="cb23-21"><a href="#cb23-21" aria-hidden="true" tabindex="-1"></a>  <span class="at">x       =</span> X,</span>
+<span id="cb23-22"><a href="#cb23-22" aria-hidden="true" tabindex="-1"></a>  <span class="at">theta   =</span> <span class="fu">c</span>(</span>
+<span id="cb23-23"><a href="#cb23-23" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Hazard shape parameters (from PARMS)</span></span>
+<span id="cb23-24"><a href="#cb23-24" aria-hidden="true" tabindex="-1"></a>    <span class="at">MUE   =</span> <span class="fl">0.3504743</span>,</span>
+<span id="cb23-25"><a href="#cb23-25" aria-hidden="true" tabindex="-1"></a>    <span class="at">THALF =</span> <span class="fl">0.1905077</span>,</span>
+<span id="cb23-26"><a href="#cb23-26" aria-hidden="true" tabindex="-1"></a>    <span class="at">NU    =</span> <span class="fl">1.437416</span>,</span>
+<span id="cb23-27"><a href="#cb23-27" aria-hidden="true" tabindex="-1"></a>    <span class="at">M     =</span> <span class="dv">1</span>,</span>
+<span id="cb23-28"><a href="#cb23-28" aria-hidden="true" tabindex="-1"></a>    <span class="at">MUC   =</span> <span class="fl">4.391673e-07</span>,</span>
+<span id="cb23-29"><a href="#cb23-29" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Covariate coefficients (from EARLY + CONSTANT blocks)</span></span>
+<span id="cb23-30"><a href="#cb23-30" aria-hidden="true" tabindex="-1"></a>    <span class="at">AGE      =</span> <span class="sc">-</span><span class="fl">0.03205774</span>,</span>
+<span id="cb23-31"><a href="#cb23-31" aria-hidden="true" tabindex="-1"></a>    <span class="at">COM_IV   =</span>  <span class="fl">1.336675</span>,</span>
+<span id="cb23-32"><a href="#cb23-32" aria-hidden="true" tabindex="-1"></a>    <span class="at">MAL      =</span>  <span class="fl">0.6872028</span>,</span>
+<span id="cb23-33"><a href="#cb23-33" aria-hidden="true" tabindex="-1"></a>    <span class="at">OPMOS    =</span> <span class="sc">-</span><span class="fl">0.01963377</span>,</span>
+<span id="cb23-34"><a href="#cb23-34" aria-hidden="true" tabindex="-1"></a>    <span class="at">OP_AGE   =</span>  <span class="fl">0.0002086689</span>,</span>
+<span id="cb23-35"><a href="#cb23-35" aria-hidden="true" tabindex="-1"></a>    <span class="at">STATUS   =</span>  <span class="fl">0.5169533</span>,</span>
+<span id="cb23-36"><a href="#cb23-36" aria-hidden="true" tabindex="-1"></a>    <span class="at">INC_SURG =</span>  <span class="fl">1.375285</span>,</span>
+<span id="cb23-37"><a href="#cb23-37" aria-hidden="true" tabindex="-1"></a>    <span class="at">ORIFICE  =</span>  <span class="fl">3.11765</span></span>
+<span id="cb23-38"><a href="#cb23-38" aria-hidden="true" tabindex="-1"></a>  ),</span>
+<span id="cb23-39"><a href="#cb23-39" aria-hidden="true" tabindex="-1"></a>  <span class="at">dist    =</span> <span class="st">&quot;weibull&quot;</span>,</span>
+<span id="cb23-40"><a href="#cb23-40" aria-hidden="true" tabindex="-1"></a>  <span class="at">control =</span> <span class="fu">list</span>(</span>
+<span id="cb23-41"><a href="#cb23-41" aria-hidden="true" tabindex="-1"></a>    <span class="at">condition =</span> <span class="dv">14</span>,</span>
+<span id="cb23-42"><a href="#cb23-42" aria-hidden="true" tabindex="-1"></a>    <span class="at">quasi     =</span> <span class="cn">TRUE</span>,</span>
+<span id="cb23-43"><a href="#cb23-43" aria-hidden="true" tabindex="-1"></a>    <span class="at">conserve  =</span> <span class="cn">TRUE</span>,</span>
+<span id="cb23-44"><a href="#cb23-44" aria-hidden="true" tabindex="-1"></a>    <span class="at">fix       =</span> <span class="fu">c</span>(<span class="st">&quot;M&quot;</span>)   <span class="co"># FIXM</span></span>
+<span id="cb23-45"><a href="#cb23-45" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb23-46"><a href="#cb23-46" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb23-47"><a href="#cb23-47" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-48"><a href="#cb23-48" aria-hidden="true" tabindex="-1"></a>fit</span></code></pre></div>
+</div>
+<hr>
+<h2 id="data-preparation-differences">Data preparation differences</h2>
+<table class="caption-top">
+<colgroup>
+<col style="width: 43%">
+<col style="width: 56%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>SAS HAZARD</th>
+<th>TemporalHazard R</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>PROC STANDARD REPLACE</code> for missing</td>
+<td>Replace with <code>mean(..., na.rm = TRUE)</code> manually</td>
+</tr>
+<tr class="even">
+<td>Log transforms in <code>DATA</code> step</td>
+<td><code>transform()</code> or <code>dplyr::mutate()</code></td>
+</tr>
+<tr class="odd">
+<td>Variable labels via <code>LABEL</code></td>
+<td>Column names of <code>x</code> matrix carry through</td>
+</tr>
+<tr class="even">
+<td><code>FILENAME</code> / <code>INFILE</code> / <code>INPUT</code></td>
+<td><code>read.table()</code>, <code>read.csv()</code>, or <code>haven::read_sas()</code></td>
+</tr>
+<tr class="odd">
+<td>SAS formats (date, currency, etc.)</td>
+<td>Standard R numeric; apply <code>as.Date()</code> if needed</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="output-object">Output object</h2>
+<p><code>hazard()</code> returns a list of class <code>hazard</code>:</p>
+<table class="caption-top">
+<colgroup>
+<col style="width: 27%">
+<col style="width: 72%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Slot</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>$call</code></td>
+<td>Unevaluated <code>match.call()</code> for reproducibility</td>
+</tr>
+<tr class="even">
+<td><code>$spec$dist</code></td>
+<td>Baseline distribution label</td>
+</tr>
+<tr class="odd">
+<td><code>$spec$control</code></td>
+<td>Control options passed at construction</td>
+</tr>
+<tr class="even">
+<td><code>$data$time</code></td>
+<td>Follow-up time vector</td>
+</tr>
+<tr class="odd">
+<td><code>$data$status</code></td>
+<td>Event indicator (numeric)</td>
+</tr>
+<tr class="even">
+<td><code>$data$x</code></td>
+<td>Design matrix</td>
+</tr>
+<tr class="odd">
+<td><code>$fit$theta</code></td>
+<td>Coefficient vector (starting values at M1; fitted at M2+)</td>
+</tr>
+<tr class="even">
+<td><code>$fit$converged</code></td>
+<td><code>NA</code> at M1; <code>TRUE</code>/<code>FALSE</code> from M2 optimizer</td>
+</tr>
+<tr class="odd">
+<td><code>$fit$objective</code></td>
+<td>Log-likelihood at convergence (M2+)</td>
+</tr>
+<tr class="even">
+<td><code>$legacy_args</code></td>
+<td>Named pass-through arguments for parity</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="prediction">Prediction</h2>
+<p>In SAS HAZARD the <code>P</code> (predict / print) option on the <code>PROC HAZARD</code> line writes predicted survival, hazard, and cumulative-hazard tables to the output dataset. In R the same predictions come from <code>predict.hazard()</code> on the fitted object, with the requested quantity chosen via the <code>type=</code> argument. <code>predict.hazard()</code> currently supports four output types — <code>&quot;linear_predictor&quot;</code>, <code>&quot;hazard&quot;</code>, <code>&quot;survival&quot;</code>, and <code>&quot;cumulative_hazard&quot;</code> — covering every quantity the SAS <code>P</code> option produces:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb24"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Linear predictor (X %*% theta)</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>eta <span class="ot">&lt;-</span> <span class="fu">predict</span>(fit, <span class="at">type =</span> <span class="st">&quot;linear_predictor&quot;</span>)</span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Hazard scale (exp(eta))</span></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a>hz  <span class="ot">&lt;-</span> <span class="fu">predict</span>(fit, <span class="at">type =</span> <span class="st">&quot;hazard&quot;</span>)</span></code></pre></div>
+</div>
+<p>The code chunk above shows only <code>&quot;linear_predictor&quot;</code> and <code>&quot;hazard&quot;</code>; <code>&quot;survival&quot;</code> and <code>&quot;cumulative_hazard&quot;</code> follow the same pattern. For multiphase fits pass <code>decompose = TRUE</code> to get per-phase cumulative hazard contributions instead of just the total.</p>
+<hr>
+<h2 id="known-limitations-vs.-sas-hazard">Known limitations vs. SAS HAZARD</h2>
+<p>A SAS HAZARD veteran migrating to <code>TemporalHazard</code> should be aware of the following scope limits as of v0.9.8. Detailed status per feature is tracked in <code>inst/dev/SAS-PARITY-GAP-ANALYSIS.md</code> and <code>inst/dev/DEVELOPMENT-PLAN.md</code>.</p>
+<h3 id="stepwise-variable-selection-selection-statement">Stepwise variable selection (<code>SELECTION</code> statement)</h3>
+<ul>
+<li><strong>Supported:</strong> <code>hzr_stepwise()</code> implements forward / backward / two-way stepwise with SAS-style SLENTRY / SLSTAY thresholds, per-phase entry for multiphase, and a MOVE oscillation guard.</li>
+<li><strong>Not yet supported:</strong> FAST-screening (Lawless-Singhal approximate Wald updates). Every candidate currently gets a full refit, which is slower but always correct.</li>
+</ul>
+<h3 id="per-phase-time-varying-windows">Per-phase time-varying windows</h3>
+<ul>
+<li><strong>Supported:</strong> <code>time_windows</code> applies one piecewise-constant cut-point set across all covariates.</li>
+<li><strong>Not yet supported:</strong> distinct <code>EARLY</code>/<code>LATE</code> window sets per phase. Workaround: expand the design matrix manually before calling <code>hazard()</code>.</li>
+</ul>
+<h3 id="output-datasets-outest-outvcov">Output datasets (<code>OUTEST=</code>, <code>OUTVCOV=</code>)</h3>
+<ul>
+<li>The R equivalents are <code>coef(fit)</code> and <code>vcov(fit)</code> in memory; there is no automatic dataset-export mode. <code>saveRDS()</code> them yourself if you need an on-disk artefact.</li>
+</ul>
+<h3 id="density-quantile-prediction-types">Density / quantile prediction types</h3>
+<ul>
+<li><code>predict.hazard()</code> covers <code>hazard</code>, <code>cumulative_hazard</code>, <code>survival</code>, and <code>linear_predictor</code>. Density and quantile (median survival) types are not wired up; derive them from <code>cumulative_hazard</code> and <code>survival</code> predictions if needed.</li>
+</ul>
+<h3 id="previously-listed-gaps-that-have-since-been-closed">Previously listed gaps that have since been closed</h3>
+<p>For users migrating from older TemporalHazard versions or reading older SAS parity notes:</p>
+<ul>
+<li><strong><code>weights</code> on all distributions</strong> — shipped v0.9.6. Weibull, exponential, log-logistic, log-normal, and multiphase all honour observation weights end-to-end (LL + analytic gradient + multiphase Conservation of Events).</li>
+<li><strong><code>Surv(start, stop, event)</code> with <code>start &gt; 0</code></strong> — shipped v0.9.7. Counting-process rows contribute <code>H(stop) - H(start)</code> for Weibull and multiphase. The previous <code>hazard()</code> guard against non-zero starts is gone.</li>
+<li><strong>Delta-method prediction confidence limits</strong> — shipped v0.9.8. Use <code>predict(..., se.fit = TRUE, level = 0.95)</code> to get a data frame with <code>fit</code>, <code>se.fit</code>, <code>lower</code>, and <code>upper</code> per row. Closed-form Jacobian for Weibull and multiphase, <code>numDeriv::jacobian</code> fallback for exponential / log-logistic / log-normal.</li>
+</ul>
+<hr>
+<h2 id="rcpp-acceleration-note">Rcpp acceleration note</h2>
+<p><code>TemporalHazard</code> is currently pure R. If profiling against large real datasets turns up bottlenecks in the likelihood kernel or the optimizer inner loop, those specific functions will be re-implemented with Rcpp. The public interface (<code>hazard()</code>, <code>predict.hazard()</code>, etc.) will not change.</p>
+<h2 class="unnumbered" id="references">References</h2>
+<p>Blackstone EH, Naftel DC, Turner ME Jr. The decomposition of time-varying hazard into phases, each incorporating a separate stream of concomitant information. <em>J Am Stat Assoc.</em> 1986;81(395):615–624. doi: <a href="https://doi.org/10.1080/01621459.1986.10478314">10.1080/01621459.1986.10478314</a></p>
+
+
+
+
+
+</body></html>

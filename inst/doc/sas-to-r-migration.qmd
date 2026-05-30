@@ -1,0 +1,566 @@
+---
+title: "Migrating from SAS HAZARD to TemporalHazard"
+format: html
+vignette: >
+  %\VignetteIndexEntry{Migrating from SAS HAZARD to TemporalHazard}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| include: false
+has_pkg <- requireNamespace("TemporalHazard", quietly = TRUE)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = has_pkg
+)
+```
+
+```{r}
+#| label: setup
+library(TemporalHazard)
+```
+
+## Overview
+
+If you've been running multiphase hazard analyses in SAS HAZARD —
+the macro suite that wraps the C HAZARD binary written by Blackstone,
+Naftel, and Turner at UAB — this vignette is the bridge to running
+the same analyses in R. Every SAS `HAZARD` statement, every common
+macro option, and every output field maps to something in
+`TemporalHazard`; this document spells out the correspondences and
+flags the small handful of features the R port doesn't yet cover.
+
+The mapping is faithful, not literal. SAS HAZARD is a step-driven
+DSL: you write a `PROC HAZARD` block with separate `TIME`, `EVENT`,
+`PARMS`, `EARLY`, `CONSTANT`, and `SELECTION` statements, and the
+macro assembles them into a binary call. R is function-driven: you
+write a single `hazard()` call with named arguments. The conceptual
+pieces are identical; the syntactic ergonomics differ. Use this
+vignette to translate an existing SAS analysis, or as a reference
+when comparing the package's output against a SAS HAZARD reference
+fit for parity testing.
+
+The full formal argument mapping table is available programmatically
+and ships with the package — handy when you want to grep for a
+specific SAS parameter name and find its R equivalent without
+scrolling through the prose below:
+
+```{r}
+#| label: mapping-table
+knitr::kable(
+  TemporalHazard::hzr_argument_mapping(),
+  caption = "Formal argument map: SAS HAZARD/C → hazard()",
+  col.names = c(
+    "SAS Statement", "Legacy Input", "C Concept",
+    "R Parameter", "Required", "Expected Type",
+    "Transform Rule", "Status", "Notes"
+  )
+)
+```
+
+---
+
+## Statement-by-statement mapping
+
+A SAS HAZARD analysis is a stack of statements inside a `PROC HAZARD`
+block. We walk through them in roughly the order they appear in a
+typical analysis script, showing the SAS form and the corresponding
+R call.
+
+### `PROC HAZARD DATA=`
+
+The procedure-level statement that names the dataset and sets
+global options. The `NOCOV` / `NOCOR` flags suppress covariance and
+correlation output; `CONDITION=` is a tolerance switch for the
+convergence check.
+
+```sas
+PROC HAZARD DATA=AVCS NOCOV NOCOR CONDITION=14;
+```
+
+Maps to `hazard()` `control` list:
+
+```{r}
+#| eval: false
+fit <- hazard(
+  ...,
+  control = list(
+    nocov      = TRUE,   # suppress covariance output
+    nocor      = TRUE,   # suppress correlation output
+    condition  = 14      # CONDITION= switch
+  )
+)
+```
+
+Additional `PROC HAZARD` options with no direct R equivalent yet are passed
+through `...` as named arguments and stored in `fit$legacy_args`.
+
+---
+
+### `TIME`
+
+Names the follow-up time variable. In SAS HAZARD this is a separate
+statement; in R it's the first argument to `Surv()` inside the
+formula.
+
+```sas
+TIME INT_DEAD;
+```
+
+Maps directly to `time`:
+
+```{r}
+#| eval: false
+fit <- hazard(
+  time   = avcs$INT_DEAD,
+  ...
+)
+```
+
+- Must be a non-negative numeric vector in the same time unit as the original
+  analysis (months, in the AVC example).
+- Missing values are not permitted.
+
+---
+
+### `EVENT`
+
+Names the event-indicator variable. Like `TIME`, this is a separate
+statement in SAS HAZARD but enters the R formula through `Surv()`.
+
+```sas
+EVENT DEAD;
+```
+
+Maps to `status`:
+
+```{r}
+#| eval: false
+fit <- hazard(
+  status = avcs$DEAD,   # 1 = event, 0 = censored
+  ...
+)
+```
+
+- `TemporalHazard` coerces `status` to `numeric`; logical vectors are also accepted.
+- The HAZARD convention uses `1` = occurred, `0` = censored/alive at last contact.
+
+---
+
+### `PARMS`
+
+Supplies starting values for the optimizer and flags which
+parameters to hold fixed (`FIXM`, `FIXMU`, etc.). The starting
+values matter — for the multiphase optimizer in particular, a poor
+starting point can park the fit at a local minimum well away from
+the global MLE.
+
+```sas
+PARMS MUE=0.3504743 THALF=0.1905077 NU=1.437416 M=1 FIXM
+      MUC=4.391673E-07;
+```
+
+Maps to `theta` (coefficient/parameter vector) and `control` (fix flags):
+
+```{r}
+#| eval: false
+fit <- hazard(
+  theta   = c(MUE = 0.3504743, THALF = 0.1905077, NU = 1.437416,
+              M = 1,           MUC   = 4.391673e-07),
+  control = list(
+    fix = c("M")   # FIXM → freeze M during optimization
+  ),
+  ...
+)
+```
+
+> **Note:** Full SAS `PARMS` syntax is not mirrored one-for-one in the public API.
+> In the current package, supply the parameter vector directly via `theta` and
+> record fixed-parameter intent in `control$fix`. The legacy parity helpers do
+> generate SAS-style control text when comparing against the historical binaries.
+
+---
+
+### `EARLY` and `CONSTANT` covariate blocks
+
+These statements assign covariates to specific phases. In SAS HAZARD
+each block lists the covariates that affect that phase and their
+starting coefficients. Covariates can appear in multiple blocks with
+different starting values — same column, different phase-specific
+effect.
+
+```sas
+EARLY  AGE=-0.03205774, COM_IV=1.336675, MAL=0.6872028,
+       OPMOS=-0.01963377, OP_AGE=0.0002086689, STATUS=0.5169533;
+CONSTANT INC_SURG=1.375285, ORIFICE=3.11765, STATUS=1.054988;
+```
+
+In HAZARD, `EARLY` and `CONSTANT` define phase-specific covariate coefficients.
+In `TemporalHazard` these are unified into a single design matrix `x` and
+coefficient vector `theta` during M1. Phase assignment will be formalised in
+M2 when the multi-phase likelihood is implemented.
+
+**Current convention (M1):** combine all covariates into `x` and supply the
+corresponding starting coefficients in `theta`.
+
+```{r}
+#| eval: false
+# Build design matrix from the AVC data set
+X <- data.matrix(avcs[, c("AGE", "COM_IV", "MAL", "OPMOS", "OP_AGE",
+                           "STATUS", "INC_SURG", "ORIFICE")])
+
+# Starting values from SAS EARLY + CONSTANT blocks combined
+theta_start <- c(
+  AGE      = -0.03205774,
+  COM_IV   =  1.336675,
+  MAL      =  0.6872028,
+  OPMOS    = -0.01963377,
+  OP_AGE   =  0.0002086689,
+  STATUS   =  0.5169533,   # EARLY phase coefficient
+  INC_SURG =  1.375285,
+  ORIFICE  =  3.11765
+)
+
+fit <- hazard(
+  time   = avcs$INT_DEAD,
+  status = avcs$DEAD,
+  x      = X,
+  theta  = theta_start,
+  dist   = "weibull"
+)
+```
+
+---
+
+### `SELECTION`
+
+Triggers stepwise covariate selection inside the hazard fit. `SLE`
+is the significance level for entry, `SLS` for staying. SAS HAZARD
+embedded this in the same `PROC HAZARD` call; in R the stepwise
+loop is a separate `hzr_stepwise()` function that wraps a fitted
+`hazard()` object.
+
+```sas
+SELECTION SLE=0.2 SLS=0.1;
+```
+
+`TemporalHazard` now ships `hzr_stepwise()`, which implements forward,
+backward, and two-way stepwise selection with SAS-style SLENTRY /
+SLSTAY thresholds, phase-specific entry for multiphase models, and a
+MOVE oscillation guard.  FAST-screening (Lawless-Singhal approximate
+Wald updates) is not yet implemented; every candidate currently gets a
+full refit.  See `?hzr_stepwise` for the full option list.
+
+---
+
+## SAS macro equivalents
+
+The legacy SAS distribution ships a suite of macros for nonparametric
+baselines, goodness-of-fit diagnostics, bootstrap inference, and
+variable calibration that sit alongside `PROC HAZARD`.  Each has an R
+equivalent in `TemporalHazard`:
+
+| SAS macro | R function | Purpose |
+|:---|:---|:---|
+| `kaplan.sas` | `hzr_kaplan()` | KM survival with logit-transformed exact CL |
+| `nelsonl.sas` / `nelsont.sas` | `hzr_nelson()` | Nelson cumulative hazard with lognormal CL |
+| `hazplot.sas` | `hzr_gof()` | Parametric vs. KM overlay + CoE goodness-of-fit |
+| `deciles.hazard.sas` | `hzr_deciles()` | Decile-of-risk calibration + chi-square GOF |
+| `logit.sas` / `logitgr.sas` | `hzr_calibrate()` | Quantile-group calibration (logit / Gompertz / Cox link) |
+| `bootstrap.hazard.sas` | `hzr_bootstrap()` | Bootstrap resampling + summary |
+| `markov.sas` | `hzr_competing_risks()` | Aalen-Johansen competing-risks incidence |
+
+Minimal illustrations on the AVC dataset follow.  The
+`vignette("inference-diagnostics")` walkthrough builds these into a
+full analysis workflow.
+
+```{r}
+#| label: macro-demos-setup
+library(survival)
+data(avc)
+avc <- na.omit(avc)
+
+# Base parametric fit for downstream diagnostics
+fit <- hazard(
+  Surv(int_dead, dead) ~ age + status + mal + com_iv,
+  data = avc, dist = "weibull",
+  theta = c(mu = 0.2, nu = 1, rep(0, 4)),
+  fit = TRUE, control = list(maxit = 500)
+)
+```
+
+```{r}
+#| label: kaplan-demo
+km <- hzr_kaplan(time = avc$int_dead, status = avc$dead)
+head(km, 4)
+```
+
+```{r}
+#| label: nelson-demo
+nel <- hzr_nelson(time = avc$int_dead, event = avc$dead)
+head(nel, 4)
+```
+
+```{r}
+#| label: gof-demo
+head(hzr_gof(fit), 4)
+```
+
+```{r}
+#| label: deciles-demo
+hzr_deciles(fit, time = 120, groups = 10)
+```
+
+```{r}
+#| label: calibrate-demo
+hzr_calibrate(avc$age, avc$dead, groups = 10, link = "logit")
+```
+
+```{r}
+#| label: bootstrap-demo
+set.seed(1)
+hzr_bootstrap(fit, n_boot = 20)  # small for vignette build
+```
+
+```{r}
+#| label: competing-demo
+data(valves)
+# Synthesize a competing-risks indicator for illustration.
+valves$ev <- with(valves, ifelse(dead == 1, 1L,
+                                   ifelse(pve == 1,  2L,
+                                   ifelse(reop == 1, 3L, 0L))))
+head(hzr_competing_risks(valves$int_dead, valves$ev), 4)
+```
+
+---
+
+## Full worked example: AVC death after repair
+
+Statement-by-statement mapping is fine for reference, but the full
+gestalt only lands when you see a complete SAS HAZARD analysis and
+its R translation side by side. The example below is the final
+multivariable model from `examples/hm.death.AVC.sas` in the
+reference C repository — death after atrioventricular canal repair,
+two-phase model with covariates assigned to specific phases. It's
+the canonical "this is what a real SAS HAZARD analysis looks like"
+specimen.
+
+### SAS (original)
+
+The original SAS code, exactly as it appears in the reference
+distribution. Notice how the statements stack inside a single
+`%HAZARD()` macro call.
+
+```sas
+%HAZARD(
+PROC HAZARD DATA=AVCS P CONSERVE OUTHAZ=OUTEST CONDITION=14 QUASI;
+     TIME INT_DEAD;
+     EVENT DEAD;
+     PARMS MUE=0.3504743 THALF=0.1905077 NU=1.437416 M=1 FIXM
+           MUC=4.391673E-07;
+     EARLY   AGE=-0.03205774, COM_IV=1.336675,  MAL=0.6872028,
+             OPMOS=-0.01963377, OP_AGE=0.0002086689, STATUS=0.5169533;
+     CONSTANT INC_SURG=1.375285, ORIFICE=3.11765, STATUS=1.054988;
+);
+```
+
+### R equivalent (current runnable translation pattern)
+
+The same model in `TemporalHazard`. Every SAS statement above has a
+corresponding R argument here: `TIME` and `EVENT` collapse into
+`Surv(int_dead, dead)` on the left of the formula; the global
+covariate list goes on the right; the `PARMS` starting values
+become the `theta` vector; phase-specific assignments use the
+`formula` argument inside each `hzr_phase()`; `FIXM` becomes
+`fixed = "shapes"` (or a subset of shape names). The line-by-line
+correspondence is the point — once you've translated one analysis
+this way, the pattern carries to every other.
+
+```{r}
+#| label: avc-example
+#| eval: false
+# Assumed: avcs is a data.frame read from the AVC flat file
+# (same variables as the SAS DATA step)
+
+avcs <- avcs |>
+  transform(
+    LN_AGE   = log(AGE),
+    LN_OPMOS = log(OPMOS),
+    LN_INC   = ifelse(is.na(INC_SURG), NA, log(INC_SURG + 1)),
+    LN_NYHA  = log(STATUS)
+  )
+
+# Replace missing INC_SURG with column mean (mirrors PROC STANDARD REPLACE)
+avcs$INC_SURG[is.na(avcs$INC_SURG)] <- mean(avcs$INC_SURG, na.rm = TRUE)
+
+X <- data.matrix(avcs[, c("AGE", "COM_IV", "MAL", "OPMOS", "OP_AGE",
+                           "STATUS", "INC_SURG", "ORIFICE")])
+
+fit <- hazard(
+  time    = avcs$INT_DEAD,
+  status  = avcs$DEAD,
+  x       = X,
+  theta   = c(
+    # Hazard shape parameters (from PARMS)
+    MUE   = 0.3504743,
+    THALF = 0.1905077,
+    NU    = 1.437416,
+    M     = 1,
+    MUC   = 4.391673e-07,
+    # Covariate coefficients (from EARLY + CONSTANT blocks)
+    AGE      = -0.03205774,
+    COM_IV   =  1.336675,
+    MAL      =  0.6872028,
+    OPMOS    = -0.01963377,
+    OP_AGE   =  0.0002086689,
+    STATUS   =  0.5169533,
+    INC_SURG =  1.375285,
+    ORIFICE  =  3.11765
+  ),
+  dist    = "weibull",
+  control = list(
+    condition = 14,
+    quasi     = TRUE,
+    conserve  = TRUE,
+    fix       = c("M")   # FIXM
+  )
+)
+
+fit
+```
+
+---
+
+## Data preparation differences
+
+| SAS HAZARD                             | TemporalHazard R                                     |
+|----------------------------------------|---------------------------------------------------|
+| `PROC STANDARD REPLACE` for missing    | Replace with `mean(..., na.rm = TRUE)` manually  |
+| Log transforms in `DATA` step          | `transform()` or `dplyr::mutate()`                |
+| Variable labels via `LABEL`            | Column names of `x` matrix carry through          |
+| `FILENAME` / `INFILE` / `INPUT`       | `read.table()`, `read.csv()`, or `haven::read_sas()` |
+| SAS formats (date, currency, etc.)     | Standard R numeric; apply `as.Date()` if needed  |
+
+---
+
+## Output object
+
+`hazard()` returns a list of class `hazard`:
+
+| Slot                  | Contents                                                     |
+|-----------------------|--------------------------------------------------------------|
+| `$call`               | Unevaluated `match.call()` for reproducibility              |
+| `$spec$dist`          | Baseline distribution label                                 |
+| `$spec$control`       | Control options passed at construction                      |
+| `$data$time`          | Follow-up time vector                                       |
+| `$data$status`        | Event indicator (numeric)                                   |
+| `$data$x`             | Design matrix                                               |
+| `$fit$theta`          | Coefficient vector (starting values at M1; fitted at M2+)  |
+| `$fit$converged`      | `NA` at M1; `TRUE`/`FALSE` from M2 optimizer               |
+| `$fit$objective`      | Log-likelihood at convergence (M2+)                        |
+| `$legacy_args`        | Named pass-through arguments for parity                     |
+
+---
+
+## Prediction
+
+In SAS HAZARD the `P` (predict / print) option on the `PROC HAZARD`
+line writes predicted survival, hazard, and cumulative-hazard tables
+to the output dataset. In R the same predictions come from
+`predict.hazard()` on the fitted object, with the requested quantity
+chosen via the `type=` argument. `predict.hazard()` currently
+supports four output types — `"linear_predictor"`, `"hazard"`,
+`"survival"`, and `"cumulative_hazard"` — covering every quantity
+the SAS `P` option produces:
+
+```{r}
+#| eval: false
+#| label: predict-example
+# Linear predictor (X %*% theta)
+eta <- predict(fit, type = "linear_predictor")
+
+# Hazard scale (exp(eta))
+hz  <- predict(fit, type = "hazard")
+```
+
+The code chunk above shows only `"linear_predictor"` and `"hazard"`;
+`"survival"` and `"cumulative_hazard"` follow the same pattern. For
+multiphase fits pass `decompose = TRUE` to get per-phase cumulative
+hazard contributions instead of just the total.
+
+---
+
+## Known limitations vs. SAS HAZARD
+
+A SAS HAZARD veteran migrating to `TemporalHazard` should be aware of
+the following scope limits as of v0.9.8.  Detailed status per feature is
+tracked in `inst/dev/SAS-PARITY-GAP-ANALYSIS.md` and
+`inst/dev/DEVELOPMENT-PLAN.md`.
+
+### Stepwise variable selection (`SELECTION` statement)
+
+- **Supported:** `hzr_stepwise()` implements forward / backward /
+  two-way stepwise with SAS-style SLENTRY / SLSTAY thresholds,
+  per-phase entry for multiphase, and a MOVE oscillation guard.
+- **Not yet supported:** FAST-screening (Lawless-Singhal approximate
+  Wald updates).  Every candidate currently gets a full refit, which
+  is slower but always correct.
+
+### Per-phase time-varying windows
+
+- **Supported:** `time_windows` applies one piecewise-constant cut-point
+  set across all covariates.
+- **Not yet supported:** distinct `EARLY`/`LATE` window sets per phase.
+  Workaround: expand the design matrix manually before calling
+  `hazard()`.
+
+### Output datasets (`OUTEST=`, `OUTVCOV=`)
+
+- The R equivalents are `coef(fit)` and `vcov(fit)` in memory; there
+  is no automatic dataset-export mode.  `saveRDS()` them yourself if
+  you need an on-disk artefact.
+
+### Density / quantile prediction types
+
+- `predict.hazard()` covers `hazard`, `cumulative_hazard`, `survival`,
+  and `linear_predictor`.  Density and quantile (median survival)
+  types are not wired up; derive them from `cumulative_hazard` and
+  `survival` predictions if needed.
+
+### Previously listed gaps that have since been closed
+
+For users migrating from older TemporalHazard versions or reading
+older SAS parity notes:
+
+- **`weights` on all distributions** — shipped v0.9.6.  Weibull,
+  exponential, log-logistic, log-normal, and multiphase all honour
+  observation weights end-to-end (LL + analytic gradient + multiphase
+  Conservation of Events).
+- **`Surv(start, stop, event)` with `start > 0`** — shipped v0.9.7.
+  Counting-process rows contribute `H(stop) - H(start)` for Weibull
+  and multiphase.  The previous `hazard()` guard against non-zero
+  starts is gone.
+- **Delta-method prediction confidence limits** — shipped v0.9.8.
+  Use `predict(..., se.fit = TRUE, level = 0.95)` to get a data frame
+  with `fit`, `se.fit`, `lower`, and `upper` per row.  Closed-form
+  Jacobian for Weibull and multiphase, `numDeriv::jacobian` fallback
+  for exponential / log-logistic / log-normal.
+
+---
+
+## Rcpp acceleration note
+
+`TemporalHazard` is currently pure R. If profiling against large real datasets
+turns up bottlenecks in the likelihood kernel or the optimizer inner loop, those
+specific functions will be re-implemented with Rcpp. The public interface
+(`hazard()`, `predict.hazard()`, etc.) will not change.
+
+
+## References {.unnumbered}
+
+Blackstone EH, Naftel DC, Turner ME Jr. The decomposition of time-varying
+hazard into phases, each incorporating a separate stream of concomitant
+information. *J Am Stat Assoc.* 1986;81(395):615–624.
+doi: [10.1080/01621459.1986.10478314](https://doi.org/10.1080/01621459.1986.10478314)

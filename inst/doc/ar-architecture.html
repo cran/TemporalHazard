@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.10.0">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="author" content="John Ehrlinger">
+<meta name="dcterms.date" content="2026-05-27">
+
+<title>Package Architecture</title>
+<style>
+
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+width: 0.8em;
+margin: 0 0.8em 0.2em -1em;  vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+}
+pre.numberSource { margin-left: 3em; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+</style>
+</head>
+
+<body>
+
+
+<header id="title-block-header">
+<h1 class="title">Package Architecture</h1>
+<p class="subtitle">Design, golden fixtures, and dataset catalog for TemporalHazard</p>
+<p class="author">John Ehrlinger</p>
+
+<p class="date">2026-05-27</p>
+</header>
+
+<nav id="TOC" role="doc-toc">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#overview" id="toc-overview"><span class="header-section-number">1</span> Overview</a></li>
+  <li><a href="#source-file-organization" id="toc-source-file-organization"><span class="header-section-number">2</span> Source file organization</a></li>
+  <li><a href="#function-call-graph" id="toc-function-call-graph"><span class="header-section-number">3</span> Function call graph</a>
+  <ul>
+  <li><a href="#key-internal-functions" id="toc-key-internal-functions"><span class="header-section-number">3.1</span> Key internal functions</a>
+  <ul>
+  <li><a href="#theta-vector-layout" id="toc-theta-vector-layout"><span class="header-section-number">3.1.1</span> Theta vector layout</a></li>
+  <li><a href="#phase-specification" id="toc-phase-specification"><span class="header-section-number">3.1.2</span> Phase specification</a></li>
+  <li><a href="#decomposition-engine" id="toc-decomposition-engine"><span class="header-section-number">3.1.3</span> Decomposition engine</a></li>
+  <li><a href="#multi-start-optimization" id="toc-multi-start-optimization"><span class="header-section-number">3.1.4</span> Multi-start optimization</a></li>
+  </ul></li>
+  </ul></li>
+  <li><a href="#golden-fixture-system" id="toc-golden-fixture-system"><span class="header-section-number">4</span> Golden fixture system</a>
+  <ul>
+  <li><a href="#fixture-format" id="toc-fixture-format"><span class="header-section-number">4.1</span> Fixture format</a></li>
+  <li><a href="#current-fixtures" id="toc-current-fixtures"><span class="header-section-number">4.2</span> Current fixtures</a></li>
+  <li><a href="#regenerating-fixtures" id="toc-regenerating-fixtures"><span class="header-section-number">4.3</span> Regenerating fixtures</a></li>
+  </ul></li>
+  <li><a href="#testing-strategy" id="toc-testing-strategy"><span class="header-section-number">5</span> Testing strategy</a>
+  <ul>
+  <li><a href="#multiphase-parity-tests" id="toc-multiphase-parity-tests"><span class="header-section-number">5.0.1</span> Multiphase parity tests</a></li>
+  </ul></li>
+  <li><a href="#sec-datasets" id="toc-sec-datasets"><span class="header-section-number">6</span> Dataset catalog</a>
+  <ul>
+  <li><a href="#loading-datasets" id="toc-loading-datasets"><span class="header-section-number">6.1</span> Loading datasets</a></li>
+  <li><a href="#dataset-details" id="toc-dataset-details"><span class="header-section-number">6.2</span> Dataset details</a>
+  <ul>
+  <li><a href="#avc-atrioventricular-canal-repair" id="toc-avc-atrioventricular-canal-repair"><span class="header-section-number">6.2.1</span> AVC (atrioventricular canal repair)</a></li>
+  <li><a href="#cabgkul-coronary-artery-bypass-grafting" id="toc-cabgkul-coronary-artery-bypass-grafting"><span class="header-section-number">6.2.2</span> CABG/KUL (coronary artery bypass grafting)</a></li>
+  <li><a href="#omc-open-mitral-commissurotomy" id="toc-omc-open-mitral-commissurotomy"><span class="header-section-number">6.2.3</span> OMC (open mitral commissurotomy)</a></li>
+  <li><a href="#tga-transposition-of-great-arteries" id="toc-tga-transposition-of-great-arteries"><span class="header-section-number">6.2.4</span> TGA (transposition of great arteries)</a></li>
+  <li><a href="#valves-primary-valve-replacement" id="toc-valves-primary-valve-replacement"><span class="header-section-number">6.2.5</span> Valves (primary valve replacement)</a></li>
+  </ul></li>
+  </ul></li>
+  <li><a href="#sasc-parameter-mapping" id="toc-sasc-parameter-mapping"><span class="header-section-number">7</span> SAS/C parameter mapping</a>
+  <ul>
+  <li><a href="#early-phase-g1-mapping" id="toc-early-phase-g1-mapping"><span class="header-section-number">7.1</span> Early phase (G1) mapping</a></li>
+  <li><a href="#late-phase-g3-mapping" id="toc-late-phase-g3-mapping"><span class="header-section-number">7.2</span> Late phase (G3) mapping</a></li>
+  </ul></li>
+  <li><a href="#version-history" id="toc-version-history"><span class="header-section-number">8</span> Version history</a></li>
+  <li><a href="#references" id="toc-references">References</a></li>
+  </ul>
+</nav>
+<h1 data-number="1" id="overview"><span class="header-section-number">1</span> Overview</h1>
+<p>TemporalHazard is a pure-R reimplementation of the C/SAS HAZARD procedure originally developed at the University of Alabama at Birmingham (UAB) for multi-phase parametric hazard modeling (Blackstone, Naftel, and Turner 1986). The SAS/C code and this R package are currently developed and maintained at The Cleveland Clinic Foundation, and the R code was wholly developed at The Cleveland Clinic Foundation. The package provides a unified framework for fitting additive hazard models with an arbitrary number of temporal phases, each governed by the three-parameter <code>decompos(t; t_half, nu, m)</code> family. The generalized temporal decomposition extends naturally to longitudinal mixed-effects settings (Rajeswaran et al. 2018).</p>
+<p>This vignette documents the internal architecture: how source files are organized, how functions compose into the fitting pipeline, how golden fixtures ensure regression-free development, and what reference datasets ship with the package.</p>
+<h1 data-number="2" id="source-file-organization"><span class="header-section-number">2</span> Source file organization</h1>
+<p>The R source lives in <code>R/</code> and follows a layered design. Lower layers know nothing about higher layers; control flows downward from the API through distribution-specific optimizers to shared numerical primitives.</p>
+<div class="cell">
+<div class="cell-output-display">
+<table class="caption-top">
+<caption>R source files by architectural layer</caption>
+<colgroup>
+<col style="width: 19%">
+<col style="width: 19%">
+<col style="width: 60%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">Layer</th>
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">User API</td>
+<td style="text-align: left;">hazard_api.R</td>
+<td style="text-align: left;">hazard(), predict.hazard(), print/summary/coef/vcov S3 methods</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">User API</td>
+<td style="text-align: left;">argument_mapping.R</td>
+<td style="text-align: left;">SAS HAZARD -&gt; R parameter translation table</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">Multiphase engine</td>
+<td style="text-align: left;">likelihood-multiphase.R</td>
+<td style="text-align: left;">Additive N-phase likelihood, cumhaz/hazard evaluators, multi-start optimizer</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">Multiphase engine</td>
+<td style="text-align: left;">phase-spec.R</td>
+<td style="text-align: left;">hzr_phase() constructor, validators, starting-value assembly</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">Multiphase engine</td>
+<td style="text-align: left;">decomposition.R</td>
+<td style="text-align: left;">Unified decompos(t; t_half, nu, m) parametric family</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">Single-phase likelihoods</td>
+<td style="text-align: left;">likelihood-weibull.R</td>
+<td style="text-align: left;">Weibull PH likelihood, gradient, optimizer</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">Single-phase likelihoods</td>
+<td style="text-align: left;">likelihood-exponential.R</td>
+<td style="text-align: left;">Exponential (constant hazard) likelihood</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">Single-phase likelihoods</td>
+<td style="text-align: left;">likelihood-loglogistic.R</td>
+<td style="text-align: left;">Log-logistic (proportional odds) likelihood</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">Single-phase likelihoods</td>
+<td style="text-align: left;">likelihood-lognormal.R</td>
+<td style="text-align: left;">Log-normal (AFT) likelihood</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">Shared infrastructure</td>
+<td style="text-align: left;">optimizer.R</td>
+<td style="text-align: left;">Generic L-BFGS-B/BFGS optimizer with Hessian-based vcov</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">Shared infrastructure</td>
+<td style="text-align: left;">math_primitives.R</td>
+<td style="text-align: left;">Numerically stable log1pexp, log1mexp, clamp_prob</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">Shared infrastructure</td>
+<td style="text-align: left;">formula-helpers.R</td>
+<td style="text-align: left;">Surv() formula parsing for right/left/interval censoring</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">Shared infrastructure</td>
+<td style="text-align: left;">golden_fixtures.R</td>
+<td style="text-align: left;">Synthetic fixture generators (.rds reference outputs)</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">Shared infrastructure</td>
+<td style="text-align: left;">parity-helpers.R</td>
+<td style="text-align: left;">Stubs for cross-validating against C HAZARD binary</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<h1 data-number="3" id="function-call-graph"><span class="header-section-number">3</span> Function call graph</h1>
+<p>The primary user entry point is <code>hazard()</code>, which dispatches to distribution-specific optimizers. The diagram below shows the call flow for a multiphase fit.</p>
+<pre><code>Call graph for a multiphase hazard fit
+--------------------------------------
+
+hazard(dist=&#39;multiphase&#39;)
++-- .hzr_optim_multiphase()
+|   +-- Resolve per-phase design matrices
+|   +-- .hzr_phase_start() per phase
+|   +-- .hzr_optim_generic()
+|       +-- stats::optim(method=&#39;BFGS&#39;)
+|           +-- .hzr_logl_multiphase()
+|               +-- .hzr_split_theta()
+|               +-- .hzr_multiphase_cumhaz()
+|               |   +-- hzr_phase_cumhaz() / hzr_decompos_g3()
+|               +-- .hzr_multiphase_hazard()
+|                   +-- hzr_phase_hazard() / hzr_decompos_g3()
++-- predict.hazard()
+    +-- .hzr_multiphase_cumhaz()
+    +-- .hzr_multiphase_hazard()</code></pre>
+<p>For single-phase distributions (Weibull, exponential, log-logistic, log-normal), <code>hazard()</code> dispatches to the corresponding <code>.hzr_optim_&lt;dist&gt;()</code> function, which calls <code>.hzr_optim_generic()</code> with the distribution-specific log-likelihood and gradient.</p>
+<h2 data-number="3.1" id="key-internal-functions"><span class="header-section-number">3.1</span> Key internal functions</h2>
+<h3 data-number="3.1.1" id="theta-vector-layout"><span class="header-section-number">3.1.1</span> Theta vector layout</h3>
+<p>The multiphase model concatenates per-phase sub-vectors into a single flat <code>theta</code> on the <strong>internal (estimation) scale</strong>:</p>
+<div class="cell">
+<div class="cell-output-display">
+<table class="caption-top">
+<caption>Internal theta layout per phase</caption>
+<colgroup>
+<col style="width: 16%">
+<col style="width: 75%">
+<col style="width: 7%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">Phase.type</th>
+<th style="text-align: left;">Sub.vector</th>
+<th style="text-align: left;">Count</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">cdf / hazard</td>
+<td style="text-align: left;">[log_mu, log_t_half, nu, m, beta_1, …, beta_p]</td>
+<td style="text-align: left;">4 + p</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">g3</td>
+<td style="text-align: left;">[log_mu, log_tau, gamma, alpha, eta, beta_1, …, beta_p]</td>
+<td style="text-align: left;">5 + p</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">constant</td>
+<td style="text-align: left;">[log_mu, beta_1, …, beta_p]</td>
+<td style="text-align: left;">1 + p</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<p><code>.hzr_split_theta()</code> partitions the concatenated vector into a named list of per-phase sub-vectors. <code>.hzr_unpack_phase_theta()</code> extracts named parameters (<code>log_mu</code>, <code>log_t_half</code>, <code>nu</code>, <code>m</code>, <code>beta</code>) from each sub-vector.</p>
+<h3 data-number="3.1.2" id="phase-specification"><span class="header-section-number">3.1.2</span> Phase specification</h3>
+<p><code>hzr_phase(type, t_half, nu, m, formula)</code> creates a lightweight S3 object that stores the phase type, initial shape parameters, and an optional phase-specific covariate formula. The constructor validates inputs and returns <code>NA</code> for shape parameters of constant phases.</p>
+<p>A list of <code>hzr_phase</code> objects is validated by <code>.hzr_validate_phases()</code>, which auto-names unnamed phases (“phase_1”, “phase_2”, …) and catches the common mistake of passing a bare <code>hzr_phase</code> instead of a list.</p>
+<h3 data-number="3.1.3" id="decomposition-engine"><span class="header-section-number">3.1.3</span> Decomposition engine</h3>
+<p><code>hzr_decompos(time, t_half, nu, m)</code> is the mathematical core. It computes <code>G(t)</code> (CDF), <code>g(t)</code> (density), and <code>h(t)</code> (hazard) for the three-parameter family across six valid sign combinations of <code>nu</code> and <code>m</code>. The phase-level helpers <code>hzr_phase_cumhaz()</code> and <code>hzr_phase_hazard()</code> wrap <code>hzr_decompos()</code> and apply the phase type mapping:</p>
+<table class="caption-top">
+<thead>
+<tr class="header">
+<th style="text-align: left;">Phase type</th>
+<th style="text-align: left;"><span class="math inline"><em>Φ</em>(<em>t</em>)</span></th>
+<th style="text-align: left;"><span class="math inline"><em>ϕ</em>(<em>t</em>)</span></th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;"><code>&quot;cdf&quot;</code></td>
+<td style="text-align: left;"><span class="math inline"><em>G</em><sub>1</sub>(<em>t</em>)</span></td>
+<td style="text-align: left;"><span class="math inline"><em>g</em><sub>1</sub>(<em>t</em>)</span></td>
+</tr>
+<tr class="even">
+<td style="text-align: left;"><code>&quot;hazard&quot;</code></td>
+<td style="text-align: left;"><span class="math inline">−log (1 − <em>G</em><sub>1</sub>(<em>t</em>))</span></td>
+<td style="text-align: left;"><span class="math inline"><em>h</em><sub>1</sub>(<em>t</em>)</span></td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;"><code>&quot;g3&quot;</code></td>
+<td style="text-align: left;"><span class="math inline"><em>G</em><sub>3</sub>(<em>t</em>; <em>τ</em>, <em>γ</em>, <em>α</em>, <em>η</em>)</span></td>
+<td style="text-align: left;"><span class="math inline"><em>g</em><sub>3</sub>(<em>t</em>)</span></td>
+</tr>
+<tr class="even">
+<td style="text-align: left;"><code>&quot;constant&quot;</code></td>
+<td style="text-align: left;"><span class="math inline"><em>t</em></span></td>
+<td style="text-align: left;"><span class="math inline">1</span></td>
+</tr>
+</tbody>
+</table>
+<h3 data-number="3.1.4" id="multi-start-optimization"><span class="header-section-number">3.1.4</span> Multi-start optimization</h3>
+<p><code>.hzr_optim_multiphase()</code> runs a multi-start strategy: the first start uses the assembled starting values (from <code>theta</code> or <code>hzr_phase</code> specs); subsequent starts perturb randomly (sd = 0.5). The best log-likelihood across all starts is kept. This helps the optimizer escape the shallow local optima that are common in multiphase models.</p>
+<p>The optimizer delegates to <code>.hzr_optim_generic()</code>, which wraps <code>stats::optim()</code> with method <code>&quot;BFGS&quot;</code> (unconstrained; all scale parameters are log-transformed). The Hessian is computed numerically at the converged point for variance-covariance estimation.</p>
+<h1 data-number="4" id="golden-fixture-system"><span class="header-section-number">4</span> Golden fixture system</h1>
+<p>Golden fixtures are pre-fitted model results saved as <code>.rds</code> files in <code>inst/fixtures/</code>. They serve as <strong>regression anchors</strong>: each test run refits the model on the same data and compares estimates to the stored values. This catches regressions when the likelihood, gradient, or optimizer changes.</p>
+<h2 data-number="4.1" id="fixture-format"><span class="header-section-number">4.1</span> Fixture format</h2>
+<p>Every fixture is a named list with a consistent structure:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">list</span>(</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">description =</span> <span class="st">&quot;Human-readable description&quot;</span>,</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">data =</span> <span class="fu">list</span>(time, status, [x], n, events),</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">42</span>,</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">true_params =</span> <span class="fu">list</span>(...),   <span class="co"># simulation truth (synthetic fixtures)</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">fit =</span> <span class="fu">list</span>(</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    <span class="at">theta     =</span> <span class="sc">&lt;</span>named numeric<span class="sc">&gt;</span>,  <span class="co"># converged parameter vector</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    <span class="at">logl      =</span> <span class="sc">&lt;</span>scalar<span class="sc">&gt;</span>,         <span class="co"># log-likelihood at convergence</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>    <span class="at">converged =</span> <span class="sc">&lt;</span>logical<span class="sc">&gt;</span>,        <span class="co"># convergence flag</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    <span class="at">vcov      =</span> <span class="sc">&lt;</span>matrix<span class="sc">&gt;</span>          <span class="co"># asymptotic variance-covariance</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>  ),</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>  <span class="at">timestamp =</span> <span class="sc">&lt;</span>POSIXct<span class="sc">&gt;</span></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<p>For C-reference fixtures (e.g., <code>mp_c_reference_kul.rds</code>), the <code>fit</code> element is replaced by <code>c_reference</code> containing the C binary output: parameter estimates, standard errors, variance-covariance matrix, and the C log-likelihood.</p>
+<h2 data-number="4.2" id="current-fixtures"><span class="header-section-number">4.2</span> Current fixtures</h2>
+<div class="cell">
+<div class="cell-output-display">
+<table class="caption-top" style="width:100%;">
+<caption>Golden fixture inventory</caption>
+<colgroup>
+<col style="width: 20%">
+<col style="width: 12%">
+<col style="width: 50%">
+<col style="width: 16%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Distribution</th>
+<th style="text-align: left;">Description</th>
+<th style="text-align: left;">Source</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">hz_univariate.rds</td>
+<td style="text-align: left;">Weibull</td>
+<td style="text-align: left;">Univariable shape estimation (n=100)</td>
+<td style="text-align: left;">Synthetic (seed=42)</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">hm_multivariate.rds</td>
+<td style="text-align: left;">Weibull</td>
+<td style="text-align: left;">2 covariates (n=100)</td>
+<td style="text-align: left;">Synthetic (seed=42)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">hm_edge_case.rds</td>
+<td style="text-align: left;">Weibull</td>
+<td style="text-align: left;">Edge case: n=20, 3 covariates</td>
+<td style="text-align: left;">Synthetic (seed=42)</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">hz_loglogistic.rds</td>
+<td style="text-align: left;">Log-logistic</td>
+<td style="text-align: left;">Univariable (n=80)</td>
+<td style="text-align: left;">Synthetic (seed=42)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">hz_lognormal.rds</td>
+<td style="text-align: left;">Log-normal</td>
+<td style="text-align: left;">Univariable (n=80)</td>
+<td style="text-align: left;">Synthetic (seed=42)</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">mp_synthetic_3phase.rds</td>
+<td style="text-align: left;">Multiphase (3)</td>
+<td style="text-align: left;">Synthetic early CDF + constant + late hazard (n=500)</td>
+<td style="text-align: left;">Synthetic (seed=42)</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">mp_c_reference_kul.rds</td>
+<td style="text-align: left;">Multiphase (3)</td>
+<td style="text-align: left;">KUL CABG dataset + C HAZARD binary reference output (n=5880)</td>
+<td style="text-align: left;">Clinical + C binary</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<h2 data-number="4.3" id="regenerating-fixtures"><span class="header-section-number">4.3</span> Regenerating fixtures</h2>
+<p>Fixtures must be regenerated whenever the model parameterization changes. The generators are maintainer-only helpers kept in <code>data-raw/</code> (outside the installed package). Run them interactively from the package source tree after <code>devtools::load_all()</code> and sourcing the generator script:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>devtools<span class="sc">::</span><span class="fu">load_all</span>()</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fu">source</span>(<span class="st">&quot;data-raw/golden_fixtures.R&quot;</span>)</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Each generator requires an explicit output directory (no default path</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="co"># is written). Use the project source dir to persist, or tempdir() to test.</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>dir <span class="ot">&lt;-</span> <span class="st">&quot;inst/fixtures&quot;</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Single-phase distributions</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="fu">.hzr_create_synthetic_golden_fixtures</span>(dir, <span class="at">seed =</span> <span class="dv">42</span>L)   <span class="co"># Weibull variants</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="fu">.hzr_create_loglogistic_golden_fixture</span>(dir, <span class="at">seed =</span> <span class="dv">42</span>L)  <span class="co"># Log-logistic</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a><span class="fu">.hzr_create_lognormal_golden_fixture</span>(dir, <span class="at">seed =</span> <span class="dv">42</span>L)    <span class="co"># Log-normal</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="co"># Multiphase</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a><span class="fu">.hzr_create_multiphase_golden_fixture</span>(dir, <span class="at">seed =</span> <span class="dv">42</span>L)   <span class="co"># Synthetic 3-phase</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a><span class="fu">.hzr_create_c_reference_kul_fixture</span>(dir)                  <span class="co"># C binary reference</span></span></code></pre></div>
+<p>Pass an explicit <code>seed</code> for reproducibility; the global RNG state is saved and restored, so the caller’s stream is unaffected. With the default (<code>seed = NULL</code>) no seed is set. Commit the updated <code>.rds</code> files alongside any code changes.</p>
+<h1 data-number="5" id="testing-strategy"><span class="header-section-number">5</span> Testing strategy</h1>
+<p>The test suite (<code>tests/testthat/</code>) is organized into four tiers:</p>
+<div class="cell">
+<div class="cell-output-display">
+<table class="caption-top">
+<caption>Test suite tiers</caption>
+<colgroup>
+<col style="width: 7%">
+<col style="width: 54%">
+<col style="width: 37%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">Tier</th>
+<th style="text-align: left;">Files</th>
+<th style="text-align: left;">Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">Unit tests</td>
+<td style="text-align: left;">test-math-primitives, test-decomposition, test-phase-spec, test-argument-mapping</td>
+<td style="text-align: left;">Verify individual functions in isolation</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">Distribution tests</td>
+<td style="text-align: left;">test-gradient-weibull, test-exponential-dist, test-loglogistic-dist, test-lognormal-dist, test-multiphase-gradient</td>
+<td style="text-align: left;">Likelihood, gradient, and optimizer for each distribution</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">Integration tests</td>
+<td style="text-align: left;">test-hazard-api, test-predict-types, test-interval-censoring-<em>, test-time-varying-</em>, test-multiphase-likelihood, test-multiphase-api</td>
+<td style="text-align: left;">End-to-end: hazard() -&gt; predict() -&gt; summary() pipeline, censoring types, multiphase wiring</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">Parity tests</td>
+<td style="text-align: left;">test-parity-core, test-parity-edge-cases, test-parity-c-binary, test-multiphase-parity</td>
+<td style="text-align: left;">Golden fixture round-trip, C binary cross-validation</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<h3 data-number="5.0.1" id="multiphase-parity-tests"><span class="header-section-number">5.0.1</span> Multiphase parity tests</h3>
+<p>The multiphase parity tests (<code>test-multiphase-parity.R</code>) validate against the C HAZARD binary output for the KUL CABG dataset:</p>
+<ol type="1">
+<li><p><strong>Likelihood evaluation</strong> —Evaluates the R log-likelihood at the C converged parameters and asserts it matches the C output (-3740.52).</p></li>
+<li><p><strong>Decomposition consistency</strong> —Verifies phase additivity and CDF saturation at the C reference parameter values.</p></li>
+<li><p><strong>Conservation of events</strong> —Checks that the model-implied expected events (<span class="math inline">∑[1 − exp (−<em>H</em>(<em>t</em><sub><em>i</em></sub>))]</span>) matches the observed event count (545), as reported by the C binary (544.9993).</p></li>
+<li><p><strong>Profile standard errors</strong> —Computes a numerical Hessian varying only the 3 log(mu) parameters (shapes held fixed), matching the C binary’s estimation strategy, and compares standard errors.</p></li>
+<li><p><strong>Full fit convergence</strong> —Fits the R multiphase optimizer on the full dataset with informed starting values and checks that the log-likelihood meets or exceeds the C reference.</p></li>
+</ol>
+<h1 data-number="6" id="sec-datasets"><span class="header-section-number">6</span> Dataset catalog</h1>
+<p>TemporalHazard ships five clinical reference datasets in <code>inst/extdata/</code>, converted from the original C/SAS HAZARD test data. These datasets are used in vignette examples and parity testing.</p>
+<div class="cell">
+<div class="cell-output-display">
+<table class="caption-top">
+<caption>Reference datasets (lazy-loaded via <code>data()</code>)</caption>
+<colgroup>
+<col style="width: 7%">
+<col style="width: 29%">
+<col style="width: 2%">
+<col style="width: 19%">
+<col style="width: 25%">
+<col style="width: 15%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">File</th>
+<th style="text-align: left;">Study</th>
+<th style="text-align: right;">n</th>
+<th style="text-align: left;">Events</th>
+<th style="text-align: left;">Covariates</th>
+<th style="text-align: left;">SAS.origin</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">avc.csv</td>
+<td style="text-align: left;">Atrioventricular canal repair</td>
+<td style="text-align: right;">310</td>
+<td style="text-align: left;">70 deaths</td>
+<td style="text-align: left;">NYHA, age, anatomy, era</td>
+<td style="text-align: left;">hz.death.AVC, hm.death.AVC</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">cabgkul.csv</td>
+<td style="text-align: left;">Coronary artery bypass grafting (KU Leuven)</td>
+<td style="text-align: right;">5880</td>
+<td style="text-align: left;">545 deaths</td>
+<td style="text-align: left;">None (intercept only)</td>
+<td style="text-align: left;">hz.deadp.KUL</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">omc.csv</td>
+<td style="text-align: left;">Open mitral commissurotomy</td>
+<td style="text-align: right;">339</td>
+<td style="text-align: left;">thromboembolic events (repeated)</td>
+<td style="text-align: left;">TE events (repeated measures)</td>
+<td style="text-align: left;">hz.te123.OMC</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">tga.csv</td>
+<td style="text-align: left;">Transposition of great arteries (arterial switch)</td>
+<td style="text-align: right;">470</td>
+<td style="text-align: left;">deaths</td>
+<td style="text-align: left;">anatomy, coronary pattern, era</td>
+<td style="text-align: left;">hs.dthar.TGA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">valves.csv</td>
+<td style="text-align: left;">Primary valve replacement</td>
+<td style="text-align: right;">1533</td>
+<td style="text-align: left;">deaths, PVE, reoperation</td>
+<td style="text-align: left;">age, NYHA, valve position, pathology, race</td>
+<td style="text-align: left;">hm.deadp.VALVES</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<h2 data-number="6.1" id="loading-datasets"><span class="header-section-number">6.1</span> Loading datasets</h2>
+<div class="cell">
+<details class="code-fold">
+<summary>Show code</summary>
+<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Datasets are lazy-loaded with the package — just reference them directly.</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Raw CSVs are also available in inst/extdata/ for advanced use:</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="co">#   read.csv(system.file(&quot;extdata&quot;, &quot;cabgkul.csv&quot;, package = &quot;TemporalHazard&quot;))</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="fu">data</span>(cabgkul)</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="fu">str</span>(cabgkul)</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; &#39;data.frame&#39;:    5880 obs. of  2 variables:</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ int_dead: num  201.83 195.06 7.13 126.36 187.57 ...</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ dead    : int  0 0 1 1 0 0 1 1 0 1 ...</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="fu">data</span>(avc)</span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="fu">str</span>(avc)</span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; &#39;data.frame&#39;:    310 obs. of  11 variables:</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ study   : chr  &quot;001C&quot; &quot;002C&quot; &quot;004C&quot; &quot;005C&quot; ...</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ status  : int  3 3 1 2 2 3 1 1 3 3 ...</span></span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ inc_surg: int  4 3 2 3 1 2 3 2 3 3 ...</span></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ opmos   : num  9.46 34.07 51.58 55 60.65 ...</span></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ age     : num  69.2 53.7 286.1 154.6 48.4 ...</span></span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ mal     : int  0 0 0 1 0 0 0 0 0 0 ...</span></span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ com_iv  : int  1 1 1 1 1 1 1 1 1 1 ...</span></span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ orifice : int  0 0 0 0 0 0 0 0 0 0 ...</span></span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ dead    : int  1 1 0 0 0 0 0 0 0 1 ...</span></span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ int_dead: num  0.0534 0.3778 91.5337 111.608 106.8112 ...</span></span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;  $ op_age  : num  654 1828 14759 8505 2933 ...</span></span></code></pre></div>
+</details>
+</div>
+<h2 data-number="6.2" id="dataset-details"><span class="header-section-number">6.2</span> Dataset details</h2>
+<h3 data-number="6.2.1" id="avc-atrioventricular-canal-repair"><span class="header-section-number">6.2.1</span> AVC (atrioventricular canal repair)</h3>
+<p>The AVC dataset contains 310 patients who underwent repair of atrioventricular septal defects. It is the primary example dataset used throughout the hazard modeling examples and has the richest set of covariates for multivariable analysis.</p>
+<div class="cell">
+<div class="cell-output-display">
+<table class="caption-top">
+<caption>AVC dataset variables</caption>
+<thead>
+<tr class="header">
+<th style="text-align: left;">Variable</th>
+<th style="text-align: left;">Label</th>
+<th style="text-align: left;">Type</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">study</td>
+<td style="text-align: left;">Study number</td>
+<td style="text-align: left;">character</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">status</td>
+<td style="text-align: left;">NYHA functional class (I-V)</td>
+<td style="text-align: left;">numeric</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">inc_surg</td>
+<td style="text-align: left;">Surgical grade of AV valve incompetence</td>
+<td style="text-align: left;">numeric</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">opmos</td>
+<td style="text-align: left;">Date of operation (months since Jan 1967)</td>
+<td style="text-align: left;">numeric</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">age</td>
+<td style="text-align: left;">Age (months) at repair</td>
+<td style="text-align: left;">numeric</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">mal</td>
+<td style="text-align: left;">Important associated cardiac anomaly</td>
+<td style="text-align: left;">numeric</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">com_iv</td>
+<td style="text-align: left;">Interventricular communication</td>
+<td style="text-align: left;">numeric</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">orifice</td>
+<td style="text-align: left;">Accessory left AV valve orifice</td>
+<td style="text-align: left;">numeric</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">dead</td>
+<td style="text-align: left;">Death (event indicator)</td>
+<td style="text-align: left;">numeric</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">int_dead</td>
+<td style="text-align: left;">Follow-up interval (months)</td>
+<td style="text-align: left;">numeric</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">op_age</td>
+<td style="text-align: left;">Interaction: opmos x age</td>
+<td style="text-align: left;">numeric</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<h3 data-number="6.2.2" id="cabgkul-coronary-artery-bypass-grafting"><span class="header-section-number">6.2.2</span> CABG/KUL (coronary artery bypass grafting)</h3>
+<p>The KUL dataset is a large series of 5880 primary isolated CABG patients from KU Leuven (1971–July 1987). It serves as the primary benchmark for C binary parity testing because it has the simplest structure (intercept-only, right-censored) combined with a large sample size that exercises all three temporal phases.</p>
+<p>The original SAS analysis (<code>hz.deadp.KUL.sas</code>) also includes return-of-angina and reintervention endpoints (recorded in the original fixed-width file with 6 columns), but only the death endpoint (<code>int_dead</code>, <code>dead</code>) is extracted for parity testing.</p>
+<h3 data-number="6.2.3" id="omc-open-mitral-commissurotomy"><span class="header-section-number">6.2.3</span> OMC (open mitral commissurotomy)</h3>
+<p>The OMC dataset contains 339 patients and is unique in the collection because it involves <strong>repeated thromboembolic events</strong> (up to 3 per patient) with <strong>left censoring</strong>. The SAS analysis transforms the dataset into a repeated-events format using STARTTME and CENSORED indicators, exercising the interval censoring likelihood.</p>
+<h3 data-number="6.2.4" id="tga-transposition-of-great-arteries"><span class="header-section-number">6.2.4</span> TGA (transposition of great arteries)</h3>
+<p>The TGA dataset contains 470 patients who underwent the arterial switch operation. It includes derived variables (logarithmic and inverse transforms of clinical measurements) and is primarily used for sensitivity analysis and internal validation examples.</p>
+<h3 data-number="6.2.5" id="valves-primary-valve-replacement"><span class="header-section-number">6.2.5</span> Valves (primary valve replacement)</h3>
+<p>The VALVES dataset is the largest multivariable example with 1533 patients and multiple endpoints (death, prosthetic valve endocarditis, bioprosthesis degeneration, reoperation). The SAS analysis (<code>hm.deadp.VALVES.sas</code>) fits a multivariable 3-phase model with 10 covariates across multiple event types.</p>
+<h1 data-number="7" id="sasc-parameter-mapping"><span class="header-section-number">7</span> SAS/C parameter mapping</h1>
+<p>The original C/SAS HAZARD procedure uses a different parameterization than TemporalHazard. The <code>hzr_argument_mapping()</code> function documents the full translation.</p>
+<div class="cell">
+<details class="code-fold">
+<summary>Show code</summary>
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>mapping <span class="ot">&lt;-</span> <span class="fu">hzr_argument_mapping</span>()</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>  mapping[, <span class="fu">c</span>(<span class="st">&quot;legacy_input&quot;</span>, <span class="st">&quot;r_parameter&quot;</span>, <span class="st">&quot;implementation_status&quot;</span>, <span class="st">&quot;notes&quot;</span>)],</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">caption =</span> <span class="st">&quot;SAS HAZARD to R parameter mapping (excerpt)&quot;</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</details>
+<div class="cell-output-display">
+<table class="caption-top">
+<caption>SAS HAZARD to R parameter mapping (excerpt)</caption>
+<colgroup>
+<col style="width: 14%">
+<col style="width: 16%">
+<col style="width: 11%">
+<col style="width: 57%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">legacy_input</th>
+<th style="text-align: left;">r_parameter</th>
+<th style="text-align: left;">implementation_status</th>
+<th style="text-align: left;">notes</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">TIME variable</td>
+<td style="text-align: left;">time</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Core observation time input.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">EVENT/censor variable</td>
+<td style="text-align: left;">status</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Event indicator currently retained as numeric in object<span class="math inline"><em>d</em><em>a</em><em>t</em><em>a</em></span>status.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">X covariate block</td>
+<td style="text-align: left;">x</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Future versions will support richer design encoding helpers.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">initial parameters</td>
+<td style="text-align: left;">theta</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Used by predict.hazard as coefficient vector.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">baseline distribution</td>
+<td style="text-align: left;">dist</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Current default is ‘weibull’; more options planned.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">control options</td>
+<td style="text-align: left;">control</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Control list is stored and reserved for optimizer parity.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">additional legacy options</td>
+<td style="text-align: left;">…</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Supports legacy-style pass-through options during migration.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">t</td>
+<td style="text-align: left;">time</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Canonical SAS migration uses TIME= mapping.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">status</td>
+<td style="text-align: left;">status</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Canonical SAS migration uses EVENT= mapping.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">theta0</td>
+<td style="text-align: left;">theta</td>
+<td style="text-align: left;">planned</td>
+<td style="text-align: left;">SAS PARMS syntax parser not yet implemented.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">dist</td>
+<td style="text-align: left;">dist</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">SAS DIST keyword maps directly to dist.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">phases (3-phase structure)</td>
+<td style="text-align: left;">phases (list of hzr_phase())</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Use dist=‘multiphase’ with phases argument. N-phase generalization of legacy 3-phase model.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">MU_1, MU_2, MU_3</td>
+<td style="text-align: left;">mu (via exp(log_mu) in theta)</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Each phase has its own scale mu_j(x) = exp(alpha_j + x*beta_j). Starting value via hzr_phase().</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">THALF / RHO (early)</td>
+<td style="text-align: left;">hzr_phase(t_half=)</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Half-life: time at which G(t_half) = 0.5. Same concept as SAS RHO/THALF.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">NU (early)</td>
+<td style="text-align: left;">hzr_phase(nu=)</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Time exponent controlling rate dynamics. Same parameter name as SAS early NU.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">M (early)</td>
+<td style="text-align: left;">hzr_phase(m=)</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Shape exponent controlling distributional form. Same parameter name as SAS early M.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">DELTA (early)</td>
+<td style="text-align: left;">(absorbed by decompos)</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">The C DELTA controlled B(t) = (exp(delta*t)-1)/delta. This transform is absorbed by decompos().</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">G2 constant phase</td>
+<td style="text-align: left;">hzr_phase(‘constant’)</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Flat background rate. No shape parameters estimated. SAS G2 equivalent.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">TAU (late)</td>
+<td style="text-align: left;">hzr_phase(‘g3’, tau=)</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Late-phase G3 scale parameter. Maps directly to hzr_phase(‘g3’, tau=).</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">GAMMA (late)</td>
+<td style="text-align: left;">hzr_phase(‘g3’, gamma=)</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Late-phase G3 time exponent. Maps directly to hzr_phase(‘g3’, gamma=).</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">ALPHA (late)</td>
+<td style="text-align: left;">hzr_phase(‘g3’, alpha=)</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Late-phase G3 shape parameter. alpha=0 gives exponential case. Maps directly to hzr_phase(‘g3’, alpha=).</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">ETA (late)</td>
+<td style="text-align: left;">hzr_phase(‘g3’, eta=)</td>
+<td style="text-align: left;">implemented</td>
+<td style="text-align: left;">Late-phase G3 outer exponent. Maps directly to hzr_phase(‘g3’, eta=).</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<h2 data-number="7.1" id="early-phase-g1-mapping"><span class="header-section-number">7.1</span> Early phase (G1) mapping</h2>
+<p>The SAS early phase uses four parameters: DELTA, RHO (or THALF), NU, M. These collapse onto the three-parameter decompos family:</p>
+<ul>
+<li><strong>DELTA</strong> —Time transformation <code>B(t) = (exp(delta*t) - 1)/delta</code>. When DELTA = 0 (the common case), <code>B(t) = t</code> and the transformation is absorbed. Non-zero DELTA is not currently supported.</li>
+<li><strong>RHO / THALF</strong> —Scale parameter. <code>RHO = NU * THALF * ((2^M - 1)/M)^NU</code>. Maps directly to <code>t_half</code> in <code>hzr_phase()</code>.</li>
+<li><strong>NU</strong> —Time exponent. Maps directly.</li>
+<li><strong>M</strong> —Shape exponent. Maps directly.</li>
+</ul>
+<h2 data-number="7.2" id="late-phase-g3-mapping"><span class="header-section-number">7.2</span> Late phase (G3) mapping</h2>
+<p>The SAS late phase uses the G3 decomposition with four parameters, now directly supported via <code>hzr_phase(&quot;g3&quot;, ...)</code>:</p>
+<ul>
+<li><strong>TAU</strong> –&gt; <code>tau</code> (scale parameter)</li>
+<li><strong>GAMMA</strong> –&gt; <code>gamma</code> (time exponent)</li>
+<li><strong>ALPHA</strong> –&gt; <code>alpha</code> (shape parameter; <code>alpha = 0</code> gives exponential case)</li>
+<li><strong>ETA</strong> –&gt; <code>eta</code> (outer exponent)</li>
+</ul>
+<p>The G3 formula (for <code>alpha &gt; 0</code>) is: <span class="math inline"><em>G</em><sub>3</sub>(<em>t</em>) = (((<em>t</em>/<em>τ</em>)<sup><em>γ</em></sup> + 1)<sup>1/<em>α</em></sup> − 1)<sup><em>η</em></sup></span></p>
+<p>Unlike G1, G3 is unbounded —it can grow without limit, making it suitable for late-phase rising hazards. For the KUL benchmark with <code>gamma = 3, alpha = 1, eta = 1</code>, this simplifies to <span class="math inline"><em>G</em><sub>3</sub>(<em>t</em>) = <em>t</em><sup>3</sup></span>.</p>
+<h1 data-number="8" id="version-history"><span class="header-section-number">8</span> Version history</h1>
+<p>The package follows semantic versioning with a prerelease qualifier during active development:</p>
+<ul>
+<li><strong>v0.1.0</strong> —Single-phase engine: Weibull, exponential, log-logistic, log-normal distributions with formula interface, predict, and golden fixture testing.</li>
+<li><strong>v0.9.0</strong> —Multiphase engine: N-phase additive cumulative hazard, <code>hzr_phase()</code> specification, decomposition engine, C binary parity tests, dataset catalog.</li>
+<li><strong>v0.9.1</strong> (current) —Vignette suite, roxygen multiphase examples, CI workflow fixes (load_pkgload), SAS missing-value handling (<code>na.strings</code>), print.hazard phase labels, and README refresh.</li>
+</ul>
+<h1 class="unnumbered" id="references">References</h1>
+<p>Blackstone EH, Naftel DC, Turner ME Jr. The decomposition of time-varying hazard into phases, each incorporating a separate stream of concomitant information. <em>J Am Stat Assoc.</em> 1986;81(395):615-624. doi: <a href="https://doi.org/10.1080/01621459.1986.10478314">10.1080/01621459.1986.10478314</a></p>
+<p>Rajeswaran J, Blackstone EH, Ehrlinger J, Li L, Ishwaran H, Parides MK. Probability of atrial fibrillation after ablation: Using a parametric nonlinear temporal decomposition mixed effects model. <em>Stat Methods Med Res.</em> 2018;27(1):126-141. doi: <a href="https://doi.org/10.1177/0962280215623583">10.1177/0962280215623583</a></p>
+
+
+
+
+
+</body></html>

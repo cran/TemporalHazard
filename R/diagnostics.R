@@ -1,0 +1,1580 @@
+# diagnostics.R -- Model validation and goodness-of-fit utilities
+#
+# Implements SAS HAZARD macro equivalents for calibration and validation.
+
+#' @importFrom stats predict
+NULL
+
+#' Decile-of-risk calibration
+#'
+#' Partition observations into groups (default 10) by predicted risk and
+#' compare observed vs. expected event counts in each group.  Good
+#' calibration means the two track each other across the risk spectrum.
+#'
+#' This implements the workflow of the SAS `deciles.hazard.sas` macro.
+#' Patients are ranked by predicted cumulative hazard at a specified time
+#' point, grouped into quantile bins, and each bin is tested with a
+#' chi-square goodness-of-fit statistic. Subjects censored before the
+#' requested horizon are excluded from the observed-vs-expected comparison.
+#'
+#' @param object A fitted `hazard` object (with `fit = TRUE`).
+#' @param time Numeric scalar: the time point at which to evaluate
+#'   predicted survival / cumulative hazard.  For example, `time = 12`
+#'   evaluates 12-month predictions.
+#' @param groups Integer: number of risk groups (default 10 for deciles).
+#' @param status Optional numeric vector of event indicators (1 = event,
+#'   0 = censored).
+#'   If `NULL` (default), extracted from the fitted object's stored data.
+#' @param event_time Optional numeric vector of observed event/censoring
+#'   times.  If `NULL` (default), extracted from the fitted object.
+#'
+#' @return A data frame with one row per risk group and columns:
+#' \describe{
+#'   \item{group}{Integer group label (1 = lowest risk).}
+#'   \item{n}{Number of observations in the group.}
+#'   \item{events}{Observed event count by the requested horizon
+#'     (event indicator = 1 and event time <= \code{time}).}
+#'   \item{expected}{Expected event count by the requested horizon,
+#'     computed as the sum of individual event probabilities
+#'     (\eqn{1 - S(time)}).}
+#'   \item{observed_rate}{Observed event rate (events / n).}
+#'   \item{expected_rate}{Expected event rate (expected / n).}
+#'   \item{chi_sq}{Chi-square contribution: (events - expected)^2 /
+#'     expected.}
+#'   \item{p_value}{Upper-tail p-value from the chi-square test for
+#'     this group (1 df).}
+#'   \item{mean_survival}{Mean predicted survival probability in the
+#'     group.}
+#'   \item{mean_cumhaz}{Mean predicted cumulative hazard in the group.}
+#' }
+#'
+#' An attribute `"overall"` is attached with the overall chi-square
+#' statistic, degrees of freedom, and p-value.
+#'
+#' @examples
+#' \donttest{
+#' data(avc)
+#' avc <- na.omit(avc)
+#' fit <- hazard(
+#'   survival::Surv(int_dead, dead) ~ age + mal,
+#'   data  = avc,
+#'   dist  = "weibull",
+#'   theta = c(mu = 0.01, nu = 0.5, beta_age = 0, beta_mal = 0),
+#'   fit   = TRUE
+#' )
+#' cal <- hzr_deciles(fit, time = 120)
+#' print(cal)
+#' }
+#'
+#' @seealso [predict.hazard()] for the prediction types used internally.
+#' @export
+hzr_deciles <- function(object, time, groups = 10L,
+                        status = NULL, event_time = NULL) {
+  if (!inherits(object, "hazard")) {
+    stop("'object' must be a fitted hazard object.", call. = FALSE)
+  }
+
+  if (is.null(object$fit$theta) ||
+      (is.logical(object$fit$converged) && is.na(object$fit$converged))) {
+    stop("'object' has no fitted parameters. Refit with fit = TRUE.",
+         call. = FALSE)
+  }
+  if (!is.numeric(time) || length(time) != 1L || time <= 0) {
+    stop("'time' must be a single positive number.", call. = FALSE)
+  }
+  groups <- as.integer(groups)
+  if (groups < 2L) {
+    stop("'groups' must be at least 2.", call. = FALSE)
+  }
+
+
+  # --- Extract observed data ------------------------------------------------
+  if (is.null(status)) {
+    status <- object$data$status
+  }
+  if (is.null(event_time)) {
+    event_time <- object$data$time
+  }
+  n_obs <- length(status)
+  if (length(event_time) != n_obs) {
+    stop("'status' and 'event_time' must have the same length.",
+         call. = FALSE)
+  }
+  if (any(!is.finite(event_time)) || any(event_time < 0)) {
+    stop("'event_time' must be finite and non-negative.", call. = FALSE)
+  }
+  if (any(!is.finite(status)) || any(!status %in% c(0, 1))) {
+    stop("'status' must be coded as 0/1 with finite values.", call. = FALSE)
+  }
+
+  n_model <- length(object$data$time)
+  if (n_obs != n_model) {
+    stop("'status'/'event_time' lengths must match the fitted data length (",
+         n_model, ").", call. = FALSE)
+  }
+
+  # --- Predicted cumulative hazard and survival at the target time ----------
+  # Compute per-observation predictions at the calibration horizon.
+  if (identical(object$spec$dist, "multiphase")) {
+    phases <- object$fit$phases
+    if (is.null(phases)) phases <- object$spec$phases
+    cov_counts <- object$fit$covariate_counts
+    x_list <- object$fit$x_list
+    cumhaz <- .hzr_multiphase_cumhaz(
+      rep(time, n_model), object$fit$theta, phases, cov_counts, x_list,
+      per_phase = FALSE
+    )
+  } else if (!is.null(object$data$x) && ncol(object$data$x) > 0) {
+    nd <- as.data.frame(object$data$x)
+    nd$time <- time
+    cumhaz <- predict(object, newdata = nd, type = "cumulative_hazard")
+  } else {
+    nd <- data.frame(time = rep(time, n_model))
+    cumhaz <- predict(object, newdata = nd, type = "cumulative_hazard")
+  }
+  survival <- exp(-cumhaz)
+
+  # Exclude subjects censored before the calibration horizon.
+  include <- (status == 1) | (event_time >= time)
+  n_excluded <- sum(!include)
+  if (!any(include)) {
+    stop("No observations are available at the requested horizon after ",
+         "excluding subjects censored before 'time'.", call. = FALSE)
+  }
+
+  status <- status[include]
+  event_time <- event_time[include]
+  cumhaz <- cumhaz[include]
+  survival <- survival[include]
+  observed <- as.integer(status == 1 & event_time <= time)
+  n_included <- length(observed)
+
+  if (groups > n_included) {
+    stop("'groups' must be <= number of included observations at horizon (",
+         n_included, ").", call. = FALSE)
+  }
+
+  # --- Rank into groups by predicted risk (cumulative hazard) ---------------
+  # Higher cumhaz = higher risk; group 1 = lowest risk.
+  # Use ntile-style assignment that handles ties gracefully (no duplicate
+
+  # breaks).  When all predictions are identical (intercept-only model),
+  # observations are distributed as evenly as possible across groups.
+  ranks <- rank(cumhaz, ties.method = "first")
+  group <- as.integer(cut(ranks,
+                          breaks = seq(0, n_included,
+                                       length.out = groups + 1L),
+                          include.lowest = TRUE,
+                          labels = seq_len(groups)))
+
+  # --- Aggregate by group ---------------------------------------------------
+  result <- data.frame(
+    group = seq_len(groups),
+    n = integer(groups),
+    events = numeric(groups),
+    expected = numeric(groups),
+    observed_rate = numeric(groups),
+    expected_rate = numeric(groups),
+    chi_sq = numeric(groups),
+    p_value = numeric(groups),
+    mean_survival = numeric(groups),
+    mean_cumhaz = numeric(groups)
+  )
+
+  for (g in seq_len(groups)) {
+    idx <- which(group == g)
+    ng <- length(idx)
+    obs_events <- sum(observed[idx] == 1)
+    exp_events <- sum(1 - survival[idx])
+
+    result$n[g] <- ng
+    result$events[g] <- obs_events
+    result$expected[g] <- exp_events
+    result$observed_rate[g] <- if (ng > 0) obs_events / ng else NA_real_
+    result$expected_rate[g] <- if (ng > 0) exp_events / ng else NA_real_
+    result$mean_survival[g] <- if (ng > 0) mean(survival[idx]) else NA_real_
+    result$mean_cumhaz[g] <- if (ng > 0) mean(cumhaz[idx]) else NA_real_
+
+    # Per-group chi-square: (O - E)^2 / E
+    if (exp_events > 0) {
+      result$chi_sq[g] <- (obs_events - exp_events)^2 / exp_events
+      # Upper-tail p-value from chi-square with 1 df
+      result$p_value[g] <- stats::pchisq(result$chi_sq[g], df = 1,
+                                          lower.tail = FALSE)
+    } else {
+      result$chi_sq[g] <- NA_real_
+      result$p_value[g] <- NA_real_
+    }
+  }
+
+  # --- Overall chi-square ---------------------------------------------------
+  valid <- !is.na(result$chi_sq)
+  overall_chi_sq <- sum(result$chi_sq[valid])
+  overall_df <- sum(valid) - 1L
+  overall_p <- if (overall_df > 0) {
+    stats::pchisq(overall_chi_sq, df = overall_df, lower.tail = FALSE)
+  } else {
+    NA_real_
+  }
+
+  attr(result, "overall") <- list(
+    chi_sq = overall_chi_sq,
+    df = overall_df,
+    p_value = overall_p,
+    time = time,
+    groups = groups,
+    total_events = sum(observed == 1),
+    total_expected = sum(1 - survival),
+    n_included = n_included,
+    n_excluded = n_excluded
+  )
+
+  class(result) <- c("hzr_deciles", "data.frame")
+  result
+}
+
+#' Print method for hzr_deciles
+#'
+#' @param x An `hzr_deciles` object.
+#' @param digits Number of decimal places for formatting.
+#' @param ... Additional arguments (ignored).
+#' @return The object \code{x} of class \code{c("hzr_deciles", "data.frame")},
+#'   invisibly. The data frame has one row per risk group and columns:
+#'   \code{group} (integer group index, 1 = lowest risk),
+#'   \code{n} (group size),
+#'   \code{events} (observed event count),
+#'   \code{expected} (expected event count from model predictions),
+#'   \code{observed_rate}, \code{expected_rate} (events / n),
+#'   \code{chi_sq} (per-group (O-E)^2/E contribution),
+#'   \code{p_value} (1-df chi-square upper-tail p),
+#'   \code{mean_survival}, \code{mean_cumhaz} (mean predicted values in group).
+#'   An \code{"overall"} attribute contains the omnibus chi-square test
+#'   (fields: \code{chi_sq}, \code{df}, \code{p_value}, \code{time},
+#'   \code{groups}, \code{total_events}, \code{total_expected},
+#'   \code{n_included}, \code{n_excluded}).
+#' @export
+print.hzr_deciles <- function(x, digits = 3, ...) {
+  ov <- attr(x, "overall")
+  cat("Decile-of-risk calibration at time =", ov$time, "\n")
+  if (!is.null(ov$n_included) && !is.null(ov$n_excluded)) {
+    cat("Included", ov$n_included, "observations (excluded", ov$n_excluded,
+        "censored before horizon).\n")
+  }
+  cat(ov$groups, "groups,", ov$total_events, "observed events,",
+      signif(ov$total_expected, digits), "expected\n\n")
+
+  # Format for display
+  display <- x
+  display$expected <- signif(display$expected, digits)
+  display$observed_rate <- signif(display$observed_rate, digits)
+  display$expected_rate <- signif(display$expected_rate, digits)
+  display$chi_sq <- signif(display$chi_sq, digits)
+  display$p_value <- signif(display$p_value, digits)
+  display$mean_survival <- signif(display$mean_survival, digits)
+  display$mean_cumhaz <- signif(display$mean_cumhaz, digits)
+  class(display) <- "data.frame"
+  print(display, row.names = FALSE)
+
+  cat("\nOverall: chi-sq =", signif(ov$chi_sq, digits),
+      "on", ov$df, "df, p =",
+      format.pval(ov$p_value, digits = digits), "\n")
+
+  invisible(x)
+}
+
+
+# =========================================================================
+# hzr_gof -- Observed vs. expected goodness-of-fit
+# =========================================================================
+
+#' Goodness-of-fit: observed vs. predicted events
+#'
+#' Compare a fitted hazard model against the nonparametric Kaplan-Meier
+#' estimate by computing observed and expected (parametric) event counts
+#' at each distinct event time.  This is the R equivalent of the SAS
+#' `hazplot.sas` macro and implements the conservation-of-events
+#' diagnostic.
+#'
+#' At each observed event time the function computes:
+#' \itemize{
+#'   \item The Kaplan-Meier survival and cumulative hazard.
+#'   \item The parametric survival and cumulative hazard from the fitted
+#'     model (and per-phase components for multiphase models).
+#'   \item Cumulative observed events vs. cumulative expected events
+#'     (sum of individual cumulative hazards for those exiting the risk
+#'     set at each time).
+#'   \item The running residual (expected minus observed).
+#' }
+#'
+#' Perfect model fit implies the expected and observed event counts track
+#' each other (residual near zero).  This is the conservation-of-events
+#' principle.
+#'
+#' @param object A fitted `hazard` object (with `fit = TRUE`).
+#' @param time_grid Optional numeric vector of time points at which to
+#'   evaluate the parametric model.
+#'   If `NULL` (default), uses the sorted unique event times from the
+#'   fitted data.
+#'
+#' @return A data frame with one row per time point and columns:
+#' \describe{
+#'   \item{time}{Evaluation time.}
+#'   \item{n_risk}{Number at risk (Kaplan-Meier).}
+#'   \item{n_event}{Number of events at this time.}
+#'   \item{n_censor}{Number censored at this time.}
+#'   \item{km_surv}{Kaplan-Meier survival estimate.}
+#'   \item{km_cumhaz}{Kaplan-Meier cumulative hazard
+#'     (\eqn{-\log(\text{km\_surv})}).}
+#'   \item{par_surv}{Parametric survival from the fitted model.}
+#'   \item{par_cumhaz}{Parametric cumulative hazard.}
+#'   \item{cum_observed}{Cumulative observed events to this time.}
+#'   \item{cum_expected}{Cumulative expected events (sum of individual
+#'     cumulative hazards for observations exiting the risk set).}
+#'   \item{residual}{Expected minus observed
+#'     (\code{cum_expected - cum_observed}).}
+#' }
+#'
+#' For multiphase models, additional columns are appended for each
+#' phase: \code{par_cumhaz_<phase>}.
+#'
+#' An attribute `"summary"` is attached with scalar diagnostics:
+#' total observed events, total expected events, and the final residual.
+#'
+#' @examples
+#' \donttest{
+#' data(avc)
+#' avc <- na.omit(avc)
+#' fit <- hazard(
+#'   survival::Surv(int_dead, dead) ~ age + mal,
+#'   data  = avc,
+#'   dist  = "weibull",
+#'   theta = c(mu = 0.01, nu = 0.5, beta_age = 0, beta_mal = 0),
+#'   fit   = TRUE
+#' )
+#' gof <- hzr_gof(fit)
+#' print(gof)
+#'
+#' # Plot observed vs expected events
+#' if (requireNamespace("ggplot2", quietly = TRUE)) {
+#'   library(ggplot2)
+#'   ggplot(gof, aes(x = time)) +
+#'     geom_line(aes(y = cum_observed), colour = "#D55E00") +
+#'     geom_line(aes(y = cum_expected), colour = "#0072B2") +
+#'     labs(x = "Time", y = "Cumulative events") +
+#'     theme_minimal()
+#' }
+#' }
+#'
+#' @seealso [hzr_deciles()] for decile-of-risk calibration,
+#'   [predict.hazard()] for prediction types.
+#' @export
+hzr_gof <- function(object, time_grid = NULL) {
+  if (!inherits(object, "hazard")) {
+    stop("'object' must be a fitted hazard object.", call. = FALSE)
+  }
+  if (is.null(object$fit$theta) ||
+      (is.logical(object$fit$converged) && is.na(object$fit$converged))) {
+    stop("'object' has no fitted parameters. Refit with fit = TRUE.",
+         call. = FALSE)
+  }
+
+  # --- Extract observed data ------------------------------------------------
+  obs_time   <- object$data$time
+  obs_status <- object$data$status
+  n_total    <- length(obs_time)
+
+  if (length(obs_status) != n_total) {
+    stop("Stored 'time' and 'status' vectors must have the same length.",
+         call. = FALSE)
+  }
+  if (any(!is.finite(obs_time)) || any(obs_time < 0)) {
+    stop("Stored event/censoring times must be finite and non-negative.",
+         call. = FALSE)
+  }
+  if (any(!is.finite(obs_status)) || any(!obs_status %in% c(0, 1))) {
+    stop("Stored status must be coded as 0/1 with finite values.",
+         call. = FALSE)
+  }
+
+  # --- Kaplan-Meier via survival::survfit -----------------------------------
+  km_fit <- survival::survfit(survival::Surv(obs_time, obs_status) ~ 1)
+
+  # survfit output: time, n.risk, n.event, n.censor, surv
+  km_times   <- km_fit$time
+  km_n_risk  <- km_fit$n.risk
+  km_n_event <- km_fit$n.event
+  km_n_censor <- km_fit$n.censor
+  km_surv    <- km_fit$surv
+
+  # --- Decide time grid -----------------------------------------------------
+  if (is.null(time_grid)) {
+    time_grid <- km_times
+  }
+
+  # --- Parametric predictions at each time point ----------------------------
+  is_multiphase <- (object$spec$dist == "multiphase")
+
+  if (!is.null(object$data$x) && ncol(object$data$x) > 0) {
+    # For covariate models, evaluate at covariate means (baseline patient)
+    x_means <- colMeans(object$data$x)
+    nd <- as.data.frame(t(x_means))
+    nd <- nd[rep(1, length(time_grid)), , drop = FALSE]
+    nd$time <- time_grid
+  } else {
+    nd <- data.frame(time = time_grid)
+  }
+
+  par_cumhaz <- predict(object, newdata = nd, type = "cumulative_hazard")
+
+  # Phase decomposition for multiphase models
+  phase_cumhaz <- NULL
+  if (is_multiphase) {
+    decomp <- predict(object, newdata = nd, type = "cumulative_hazard",
+                      decompose = TRUE)
+    # decomp is a matrix; first column is "total", rest are phase names
+    phase_cols <- colnames(decomp)[colnames(decomp) != "total"]
+    phase_cumhaz <- as.data.frame(decomp[, phase_cols, drop = FALSE])
+  }
+
+  par_surv <- exp(-par_cumhaz)
+
+  # --- Interpolate KM at the time grid --------------------------------------
+  # Use stepfun-style interpolation for KM (right-continuous)
+  km_surv_at_grid <- stats::approx(
+    x = c(0, km_times), y = c(1, km_surv),
+    xout = time_grid, method = "constant", f = 0, rule = 2
+  )$y
+  km_cumhaz_at_grid <- -log(pmax(km_surv_at_grid, .Machine$double.xmin))
+
+  # Interpolate n.risk, n.event, n.censor at grid times
+  # For event counts, sum events at matching times; 0 otherwise
+  km_n_risk_grid <- stats::approx(
+    x = c(0, km_times), y = c(n_total, km_n_risk),
+    xout = time_grid, method = "constant", f = 0, rule = 2
+  )$y
+  km_n_event_grid <- rep(0, length(time_grid))
+  km_n_censor_grid <- rep(0, length(time_grid))
+  for (i in seq_along(km_times)) {
+    match_idx <- which(abs(time_grid - km_times[i]) < .Machine$double.eps * 100)
+    if (length(match_idx) > 0) {
+      km_n_event_grid[match_idx[1]] <- km_n_event[i]
+      km_n_censor_grid[match_idx[1]] <- km_n_censor[i]
+    }
+  }
+
+  # --- Conservation of Events accounting ------------------------------------
+  # At each event time, accumulate:
+  #   cum_observed: running sum of observed events
+  #   cum_expected: running sum of individual cumulative hazards for
+  #                 observations exiting the risk set (events + censored)
+  #
+  # The expected events for observations leaving at time t is:
+  #   (n_event + n_censor) * parametric_cumhaz(t)
+  # This is the SAS hazplot approach: total * _CUMHAZ at that interval.
+
+  cum_observed <- cumsum(km_n_event_grid)
+  interval_expected <- (km_n_event_grid + km_n_censor_grid) * par_cumhaz
+  cum_expected <- cumsum(interval_expected)
+  residual <- cum_expected - cum_observed
+
+  # --- Assemble result ------------------------------------------------------
+  result <- data.frame(
+    time         = time_grid,
+    n_risk       = km_n_risk_grid,
+    n_event      = km_n_event_grid,
+    n_censor     = km_n_censor_grid,
+    km_surv      = km_surv_at_grid,
+    km_cumhaz    = km_cumhaz_at_grid,
+    par_surv     = par_surv,
+    par_cumhaz   = par_cumhaz,
+    cum_observed = cum_observed,
+    cum_expected = cum_expected,
+    residual     = residual
+  )
+
+  # Add phase columns for multiphase
+  if (!is.null(phase_cumhaz)) {
+    for (ph in names(phase_cumhaz)) {
+      result[[paste0("par_cumhaz_", ph)]] <- phase_cumhaz[[ph]]
+    }
+  }
+
+  # Summary diagnostics
+  attr(result, "summary") <- list(
+    total_observed = cum_observed[length(cum_observed)],
+    total_expected = cum_expected[length(cum_expected)],
+    final_residual = residual[length(residual)],
+    dist = object$spec$dist,
+    n = n_total
+  )
+
+  class(result) <- c("hzr_gof", "data.frame")
+  result
+}
+
+#' Print method for hzr_gof
+#'
+#' @param x An `hzr_gof` object.
+#' @param digits Number of decimal places for formatting.
+#' @param ... Additional arguments (ignored).
+#' @return The object \code{x} of class \code{c("hzr_gof", "data.frame")},
+#'   invisibly. The data frame has one row per time point and columns:
+#'   \code{time}, \code{n_risk}, \code{n_event}, \code{n_censor},
+#'   \code{km_surv} (Kaplan-Meier survival), \code{km_cumhaz},
+#'   \code{par_surv} (parametric survival), \code{par_cumhaz},
+#'   \code{cum_observed} (cumulative observed events),
+#'   \code{cum_expected} (cumulative expected events from model),
+#'   \code{residual} (cum_expected - cum_observed).
+#'   Multiphase models additionally include \code{par_cumhaz_<phase>} columns
+#'   for per-phase cumulative hazard contributions.
+#'   A \code{"summary"} attribute contains scalar diagnostics:
+#'   \code{total_observed}, \code{total_expected}, \code{final_residual},
+#'   \code{dist}, \code{n}.
+#' @export
+print.hzr_gof <- function(x, digits = 3, ...) {
+  s <- attr(x, "summary")
+  cat("Goodness-of-fit: observed vs. expected events\n")
+  cat("Distribution:", s$dist, " | n =", s$n, "\n\n")
+  cat("Total observed events:", s$total_observed, "\n")
+  cat("Total expected events:", round(s$total_expected, digits), "\n")
+  cat("Final residual (E - O):", round(s$final_residual, digits), "\n")
+  cat("Conservation ratio (E/O):",
+      round(s$total_expected / max(s$total_observed, 1), digits), "\n")
+  cat("\nUse plot columns: time, km_surv, par_surv, cum_observed,",
+      "cum_expected, residual\n")
+  invisible(x)
+}
+
+
+# =========================================================================
+# hzr_kaplan -- Kaplan-Meier with exact logit confidence limits
+# =========================================================================
+
+#' Kaplan-Meier survival with exact logit confidence limits
+#'
+#' Compute the product-limit (Kaplan-Meier) survival estimate with
+#' logit-transformed confidence limits that respect the \eqn{[0, 1]}
+#' boundary.
+#' This is the R equivalent of the SAS `kaplan.sas` macro.
+#'
+#' The standard Greenwood confidence interval can exceed \eqn{[0, 1]} in the
+#' tails. The logit-transformed interval avoids this by working on the
+#' log-odds scale:
+#'
+#' \deqn{
+#'   \text{CL}_{\text{lower}} = S / \bigl(S + (1-S)\,
+#'   \exp(z_\alpha\,\text{SI})\bigr)
+#' }
+#' \deqn{
+#'   \text{CL}_{\text{upper}} = S / \bigl(S + (1-S)\,
+#'   \exp(-z_\alpha\,\text{SI})\bigr)
+#' }
+#'
+#' where \eqn{\text{SI} = \sqrt{V_P - 1} / (1 - S)}, \eqn{V_P} is the
+#' cumulative Greenwood variance product, and \eqn{z_\alpha} is the
+#' normal quantile for the requested confidence level.
+#'
+#' @param time Numeric vector of follow-up times.
+#' @param status Numeric event indicator (1 = event, 0 = censored).
+#' @param conf_level Confidence level for the interval (default 0.95).
+#'   The SAS default of 0.68268948 corresponds to a 1-SD interval.
+#' @param event_only Logical; if `TRUE` (default), only return rows at
+#'   event times (where `n_event > 0`).
+#'   If `FALSE`, return rows at all times reported by
+#'   `survival::survfit()` (events and censoring times).
+#'
+#' @return A data frame with one row per time point and columns:
+#' \describe{
+#'   \item{time}{Event/censoring time.}
+#'   \item{n_risk}{Number at risk at start of interval.}
+#'   \item{n_event}{Number of events at this time.}
+#'   \item{n_censor}{Number censored at this time.}
+#'   \item{survival}{Kaplan-Meier survival estimate.}
+#'   \item{std_err}{Standard error of survival (Greenwood).}
+#'   \item{cl_lower}{Lower confidence limit (logit-transformed).}
+#'   \item{cl_upper}{Upper confidence limit (logit-transformed).}
+#'   \item{cumhaz}{Cumulative hazard \eqn{= -\log(S)}.}
+#'   \item{hazard}{Interval hazard rate
+#'     \eqn{= \log(S_{t-1} / S_t) / \Delta t}.}
+#'   \item{density}{Probability density estimate
+#'     \eqn{= (S_{t-1} - S_t) / \Delta t}.}
+#'   \item{life}{Restricted mean survival time (area under curve to
+#'     this time).}
+#' }
+#'
+#' @examples
+#' data(cabgkul)
+#' km <- hzr_kaplan(cabgkul$int_dead, cabgkul$dead)
+#' head(km)
+#'
+#' \donttest{
+#' if (requireNamespace("ggplot2", quietly = TRUE)) {
+#'   library(ggplot2)
+#'   ggplot(km, aes(time)) +
+#'     geom_step(aes(y = survival * 100)) +
+#'     geom_ribbon(aes(ymin = cl_lower * 100, ymax = cl_upper * 100),
+#'                 stat = "identity", alpha = 0.2) +
+#'     labs(x = "Months", y = "Survival (%)") +
+#'     theme_minimal()
+#' }
+#' }
+#'
+#' @seealso [hzr_gof()] for parametric vs. nonparametric comparison.
+#' @export
+hzr_kaplan <- function(time, status, conf_level = 0.95,
+                       event_only = TRUE) {
+  if (!is.numeric(time) || !is.numeric(status)) {
+    stop("'time' and 'status' must be numeric vectors.", call. = FALSE)
+  }
+  if (length(time) != length(status)) {
+    stop("'time' and 'status' must have the same length.", call. = FALSE)
+  }
+  if (conf_level <= 0 || conf_level >= 1) {
+    stop("'conf_level' must be between 0 and 1.", call. = FALSE)
+  }
+
+  z_alpha <- stats::qnorm(0.5 + 0.5 * conf_level)
+
+  # Use survival::survfit for the core KM computation
+  km_fit <- survival::survfit(survival::Surv(time, status) ~ 1)
+
+  n_times <- length(km_fit$time)
+
+  # --- Build output vectors at each event/censoring time --------------------
+  km_time    <- km_fit$time
+  km_n_risk  <- km_fit$n.risk
+  km_n_event <- km_fit$n.event
+  km_n_censor <- km_fit$n.censor
+  km_surv    <- km_fit$surv
+
+  # --- Greenwood variance product and exact logit CL -----------------------
+  # VAR_PROD = prod_i [1/(n_i - d_i) - 1/n_i + 1] for all event times
+  # The product is cumulative: each time contributes a multiplicative factor.
+  var_prod <- rep(1.0, n_times)
+  for (i in seq_len(n_times)) {
+    ni <- km_n_risk[i]
+    di <- km_n_event[i]
+    if (ni > 0 && (ni - di) > 0 && di > 0) {
+      factor_i <- 1.0 / (ni - di) - 1.0 / ni + 1.0
+      if (i == 1L) {
+        var_prod[i] <- factor_i
+      } else {
+        var_prod[i] <- var_prod[i - 1L] * factor_i
+      }
+    } else if (i > 1L) {
+      var_prod[i] <- var_prod[i - 1L]
+    }
+  }
+
+  # Standard error (Greenwood)
+  var_exact <- km_surv^2 * pmax(var_prod - 1, 0)
+  std_err <- sqrt(var_exact)
+
+  # Logit-transformed confidence limits (SAS SI_EXACT formula)
+  si_exact <- rep(0.0, n_times)
+  idx_valid <- km_surv < 1 & km_surv > 0
+  si_exact[idx_valid] <- sqrt(pmax(var_prod[idx_valid] - 1, 0)) /
+    (1 - km_surv[idx_valid])
+
+  cl_lower <- km_surv / (km_surv + (1 - km_surv) *
+                            exp(z_alpha * si_exact))
+  cl_upper <- km_surv / (km_surv + (1 - km_surv) *
+                            exp(-z_alpha * si_exact))
+
+  # Edge cases: if S = 1 or S = 0, CL = S
+
+  cl_lower[km_surv >= 1] <- 1
+  cl_upper[km_surv >= 1] <- 1
+  cl_lower[km_surv <= 0] <- 0
+  cl_upper[km_surv <= 0] <- 0
+
+  # --- Cumulative hazard -----------------------------------------------------
+  cumhaz <- -log(pmax(km_surv, .Machine$double.xmin))
+
+  # --- Interval hazard and density ------------------------------------------
+  lag_surv <- c(1, km_surv[-n_times])
+  lag_time <- c(0, km_time[-n_times])
+  delta_t <- km_time - lag_time
+
+  hazard <- rep(NA_real_, n_times)
+  density <- rep(NA_real_, n_times)
+  idx_haz <- km_n_event > 0 & delta_t > 0 & km_surv > 0
+  hazard[idx_haz] <- log(lag_surv[idx_haz] / km_surv[idx_haz]) /
+    delta_t[idx_haz]
+  density[idx_haz] <- (lag_surv[idx_haz] - km_surv[idx_haz]) /
+    delta_t[idx_haz]
+
+  # --- Restricted mean survival (life integral) -----------------------------
+  # KM survival is a right-continuous step function.  RMST is accumulated
+  # as the sum of rectangle areas: each interval contributes dt * S(t-1).
+  life <- rep(0, n_times)
+  lag_life <- 0
+  for (i in seq_len(n_times)) {
+    life[i] <- lag_life + delta_t[i] * lag_surv[i]
+    lag_life <- life[i]
+  }
+
+  # --- Assemble result ------------------------------------------------------
+  result <- data.frame(
+    time      = km_time,
+    n_risk    = km_n_risk,
+    n_event   = km_n_event,
+    n_censor  = km_n_censor,
+    survival  = km_surv,
+    std_err   = std_err,
+    cl_lower  = cl_lower,
+    cl_upper  = cl_upper,
+    cumhaz    = cumhaz,
+    hazard    = hazard,
+    density   = density,
+    life      = life
+  )
+
+  if (event_only) {
+    result <- result[result$n_event > 0, , drop = FALSE]
+    rownames(result) <- NULL
+  }
+
+  class(result) <- c("hzr_kaplan", "data.frame")
+  result
+}
+
+#' Print method for hzr_kaplan
+#'
+#' @param x An `hzr_kaplan` object.
+#' @param digits Number of decimal places for formatting.
+#' @param n Maximum rows to print (default 20).
+#' @param ... Additional arguments (ignored).
+#' @return The object \code{x} of class \code{c("hzr_kaplan", "data.frame")},
+#'   invisibly. The data frame has one row per event time (or all times when
+#'   \code{event_only = FALSE}) and columns:
+#'   \code{time} (follow-up time),
+#'   \code{n_risk} (number at risk),
+#'   \code{n_event} (events in interval),
+#'   \code{n_censor} (censored observations in interval),
+#'   \code{survival} (Kaplan-Meier survival estimate),
+#'   \code{std_err} (Greenwood standard error on log-hazard scale),
+#'   \code{cl_lower}, \code{cl_upper} (logit-transformed confidence limits
+#'   on the survival scale),
+#'   \code{cumhaz} (Nelson-Aalen cumulative hazard),
+#'   \code{hazard} (interval hazard estimate),
+#'   \code{density} (estimated event density),
+#'   \code{life} (life-table life expectancy contribution).
+#' @export
+print.hzr_kaplan <- function(x, digits = 4, n = 20, ...) {
+  cat("Kaplan-Meier estimate with logit confidence limits\n")
+  total_events <- sum(x$n_event)
+  cat("Events:", total_events, " | Time points:", nrow(x), "\n")
+  if (nrow(x) > 0) {
+    cat("Survival range:",
+        round(min(x$survival), digits), "to",
+        round(max(x$survival), digits), "\n")
+    cat("RMST at last event:", round(x$life[nrow(x)], digits), "\n\n")
+  }
+  display <- x
+  display$survival <- round(display$survival, digits)
+  display$std_err <- round(display$std_err, digits)
+  display$cl_lower <- round(display$cl_lower, digits)
+  display$cl_upper <- round(display$cl_upper, digits)
+  display$cumhaz <- round(display$cumhaz, digits)
+  display$hazard <- round(display$hazard, digits)
+  display$density <- round(display$density, digits)
+  display$life <- round(display$life, digits)
+  class(display) <- "data.frame"
+  if (nrow(display) > n) {
+    print(utils::head(display, n), row.names = FALSE)
+    cat("... (", nrow(display) - n, " more rows)\n")
+  } else {
+    print(display, row.names = FALSE)
+  }
+  invisible(x)
+}
+
+
+# =========================================================================
+# hzr_calibrate -- Variable calibration (logit / Gompertz / Cox transform)
+# =========================================================================
+
+#' Calibrate a continuous variable against an outcome
+#'
+#' Group a continuous covariate into quantile bins, compute the event
+#' probability (or hazard rate) per bin, and apply a link transform
+#' (logit, Gompertz, or Cox).
+#' This is the R equivalent of the SAS `logit.sas` and `logitgr.sas`
+#' macros.
+#'
+#' Use this function before model entry to assess whether the covariate
+#' relationship with the outcome is approximately linear on the link
+#' scale. If the transformed probabilities are roughly linear against
+#' the group means, the covariate can enter the model untransformed.
+#' Curvature suggests a transformation (log, quadratic) may improve fit.
+#'
+#' @param x Numeric vector: the continuous covariate to calibrate.
+#' @param event Numeric vector: event indicator (1 = event, 0 = no event).
+#' @param groups Integer: number of quantile bins (default 10).
+#' @param by Optional factor or character vector for stratified calibration
+#'   (SAS `logitgr.sas` functionality). If provided, calibration is
+#'   computed within each stratum. Default `NULL` (no stratification).
+#' @param link Character: transform to apply to event probabilities.
+#'   One of `"logit"` (default), `"gompertz"` (complementary log-log),
+#'   or `"cox"`.
+#' @param time Optional numeric vector: follow-up time, required when
+#'   `link = "cox"`. The Cox link computes
+#'   \eqn{\log(\text{events} / \sum \text{time})} (constant hazard rate).
+#'
+#' @return A data frame with one row per group (or per group-by-stratum
+#'   combination) and columns:
+#' \describe{
+#'   \item{group}{Integer group label.}
+#'   \item{by}{Stratum level (only present when `by` is provided).}
+#'   \item{n}{Number of observations in the group.}
+#'   \item{events}{Number of events.}
+#'   \item{mean}{Mean of `x` within the group.}
+#'   \item{min}{Minimum of `x` within the group.}
+#'   \item{max}{Maximum of `x` within the group.}
+#'   \item{prob}{Event probability (events / n), or for Cox link:
+#'     events / sum(time).}
+#'   \item{link_value}{Transformed probability on the chosen link scale.}
+#' }
+#'
+#' @examples
+#' data(avc)
+#' avc <- na.omit(avc)
+#'
+#' # Logit calibration of age
+#' cal <- hzr_calibrate(avc$age, avc$dead, groups = 10)
+#' print(cal)
+#'
+#' \donttest{
+#' if (requireNamespace("ggplot2", quietly = TRUE)) {
+#'   library(ggplot2)
+#'   ggplot(cal, aes(mean, link_value)) +
+#'     geom_point(size = 3) +
+#'     geom_smooth(method = "lm", formula = y ~ x, se = FALSE,
+#'                 linetype = "dashed") +
+#'     labs(x = "Age at repair (months)", y = "Logit(P(death))") +
+#'     theme_minimal()
+#' }
+#' }
+#'
+#' @seealso [hzr_deciles()] for model-based calibration after fitting.
+#' @export
+hzr_calibrate <- function(x, event, groups = 10L, by = NULL,
+                          link = c("logit", "gompertz", "cox"),
+                          time = NULL) {
+  link <- match.arg(link)
+
+  if (!is.numeric(x) || !is.numeric(event)) {
+    stop("'x' and 'event' must be numeric vectors.", call. = FALSE)
+  }
+  if (length(x) != length(event)) {
+    stop("'x' and 'event' must have the same length.", call. = FALSE)
+  }
+  groups <- as.integer(groups)
+  if (groups < 2L) {
+    stop("'groups' must be at least 2.", call. = FALSE)
+  }
+  if (link == "cox" && is.null(time)) {
+    stop("'time' is required when link = 'cox'.", call. = FALSE)
+  }
+  if (!is.null(time) && length(time) != length(x)) {
+    stop("'time' must have the same length as 'x'.", call. = FALSE)
+  }
+
+  # --- Assign quantile groups -----------------------------------------------
+  ranks <- rank(x, ties.method = "first")
+  n <- length(x)
+  group <- as.integer(cut(ranks,
+                          breaks = seq(0, n, length.out = groups + 1L),
+                          include.lowest = TRUE,
+                          labels = seq_len(groups)))
+
+  # --- Build data frame for aggregation ------------------------------------
+  df <- data.frame(x = x, event = event, group = group)
+  if (!is.null(time)) df$time <- time
+  if (!is.null(by)) df$by <- by
+
+  # --- Aggregation function -------------------------------------------------
+  .calibrate_group <- function(d) {
+    ng <- nrow(d)
+    ev <- sum(d$event)
+    if (link == "cox") {
+      prob <- if (sum(d$time) > 0) ev / sum(d$time) else NA_real_
+    } else {
+      prob <- if (ng > 0) ev / ng else NA_real_
+    }
+
+    # Apply link transform
+    link_val <- if (is.na(prob) || prob <= 0 || prob >= 1) {
+      NA_real_
+    } else if (link == "logit") {
+      log(prob / (1 - prob))
+    } else if (link == "gompertz") {
+      log(-log(1 - prob))
+    } else {
+      # Cox: prob is already events/time (hazard rate)
+      if (prob > 0) log(prob) else NA_real_
+    }
+
+    data.frame(
+      n      = ng,
+      events = ev,
+      mean   = mean(d$x),
+      min    = min(d$x),
+      max    = max(d$x),
+      prob   = prob,
+      link_value = link_val
+    )
+  }
+
+  # --- Aggregate by group (and optionally by stratum) -----------------------
+  if (is.null(by)) {
+    result_list <- lapply(split(df, df$group), .calibrate_group)
+    result <- do.call(rbind, result_list)
+    result$group <- as.integer(rownames(result))
+    rownames(result) <- NULL
+    result <- result[order(result$group),
+                     c("group", "n", "events", "mean", "min", "max",
+                       "prob", "link_value")]
+  } else {
+    splits <- split(df, list(df$by, df$group))
+    result_list <- lapply(splits, function(d) {
+      if (nrow(d) == 0) return(NULL)
+      r <- .calibrate_group(d)
+      r$by <- d$by[1]
+      r$group <- d$group[1]
+      r
+    })
+    result <- do.call(rbind, Filter(Negate(is.null), result_list))
+    rownames(result) <- NULL
+    result <- result[order(result$by, result$group),
+                     c("group", "by", "n", "events", "mean", "min", "max",
+                       "prob", "link_value")]
+  }
+
+  attr(result, "link") <- link
+  attr(result, "groups") <- groups
+  class(result) <- c("hzr_calibrate", "data.frame")
+  result
+}
+
+#' Print method for hzr_calibrate
+#'
+#' @param x An `hzr_calibrate` object.
+#' @param digits Number of decimal places for formatting.
+#' @param ... Additional arguments (ignored).
+#' @return The object \code{x} of class \code{c("hzr_calibrate", "data.frame")},
+#'   invisibly. The data frame has one row per quantile group and columns:
+#'   \code{group} (group index),
+#'   \code{n} (group size),
+#'   \code{events} (event count),
+#'   \code{mean}, \code{min}, \code{max} (covariate summary within group),
+#'   \code{prob} (observed event probability),
+#'   \code{link_value} (transformed probability on the link scale).
+#'   When stratified via the \code{by} argument, a \code{by} column is also
+#'   present. Attributes: \code{"link"} (the transform applied,
+#'   e.g. \code{"logit"}) and \code{"groups"} (number of quantile bins).
+#' @export
+print.hzr_calibrate <- function(x, digits = 3, ...) {
+  lnk <- attr(x, "link")
+  grp <- attr(x, "groups")
+  cat("Variable calibration (", lnk, " link, ", grp, " groups)\n",
+      sep = "")
+  if ("by" %in% names(x)) {
+    cat("Stratified by:", paste(unique(x$by), collapse = ", "), "\n")
+  }
+  cat("\n")
+  display <- x
+  display$mean <- round(display$mean, digits)
+  display$min <- round(display$min, digits)
+  display$max <- round(display$max, digits)
+  display$prob <- round(display$prob, digits)
+  display$link_value <- round(display$link_value, digits)
+  class(display) <- "data.frame"
+  print(display, row.names = FALSE)
+  invisible(x)
+}
+
+
+# =========================================================================
+# hzr_nelson -- Wayne Nelson cumulative hazard estimator
+# =========================================================================
+
+#' Wayne Nelson cumulative hazard estimator with lognormal confidence limits
+#'
+#' Compute the Nelson-Aalen cumulative hazard estimate with lognormal
+#' confidence limits. Supports weighted events for severity-adjusted
+#' analyses of repeated/recurrent events.
+#' This is the R equivalent of the SAS `nelsonl.sas` macro.
+#'
+#' Unlike `survival::survfit()` which uses the Breslow estimator with
+#' Greenwood variance, this function uses the Wayne Nelson estimator
+#' with lognormal confidence limits that are always non-negative.
+#'
+#' @param time Numeric vector of follow-up times.
+#' @param event Numeric event indicator (1 = event, 0 = censored).
+#' @param weight Optional numeric vector of event weights (default 1).
+#'   Weights are applied only to events (censored observations contribute
+#'   zero weight). Use for severity-weighted repeated events.
+#' @param conf_level Confidence level for the interval (default 0.95).
+#'
+#' @return A data frame with one row per unique event time and columns:
+#' \describe{
+#'   \item{time}{Event time.}
+#'   \item{n_risk}{Number at risk.}
+#'   \item{n_event}{Number of events at this time.}
+#'   \item{weight_sum}{Sum of event weights at this time.}
+#'   \item{cumhaz}{Nelson cumulative hazard estimate.}
+#'   \item{std_err}{Standard error.}
+#'   \item{cl_lower}{Lower lognormal confidence limit.}
+#'   \item{cl_upper}{Upper lognormal confidence limit.}
+#'   \item{hazard}{Interval hazard rate.}
+#'   \item{cum_events}{Cumulative (weighted) event count.}
+#' }
+#'
+#' @examples
+#' data(cabgkul)
+#' nel <- hzr_nelson(cabgkul$int_dead, cabgkul$dead)
+#' head(nel)
+#'
+#' @seealso [hzr_kaplan()] for survival estimation.
+#' @export
+hzr_nelson <- function(time, event, weight = NULL, conf_level = 0.95) {
+  if (!is.numeric(time) || !is.numeric(event)) {
+    stop("'time' and 'event' must be numeric vectors.", call. = FALSE)
+  }
+  n <- length(time)
+  if (length(event) != n) {
+    stop("'time' and 'event' must have the same length.", call. = FALSE)
+  }
+  if (is.null(weight)) weight <- rep(1, n)
+  if (length(weight) != n) {
+    stop("'weight' must have the same length as 'time'.", call. = FALSE)
+  }
+  if (conf_level <= 0 || conf_level >= 1) {
+    stop("'conf_level' must be between 0 and 1.", call. = FALSE)
+  }
+
+  z_alpha <- stats::qnorm(0.5 + 0.5 * conf_level)
+
+  # Effective weight: weight * event (censored get 0)
+  e_wght <- weight * event
+
+  # Sort by time
+
+  ord <- order(time)
+  time_s <- time[ord]
+  event_s <- event[ord]
+  e_wght_s <- e_wght[ord]
+
+  # Collapse to unique times
+  u_times <- sort(unique(time_s[event_s == 1]))
+  if (length(u_times) == 0) {
+    out <- data.frame(time = numeric(0), n_risk = numeric(0),
+                      n_event = numeric(0), weight_sum = numeric(0),
+                      cumhaz = numeric(0), std_err = numeric(0),
+                      cl_lower = numeric(0), cl_upper = numeric(0),
+                      hazard = numeric(0), cum_events = numeric(0))
+    class(out) <- c("hzr_nelson", "data.frame")
+    return(out)
+  }
+
+  out_n <- length(u_times)
+  n_risk <- numeric(out_n)
+  n_event_out <- numeric(out_n)
+  weight_sum <- numeric(out_n)
+  cumhaz <- numeric(out_n)
+
+  # Single pass: compute cumhaz, variance, and lognormal CL together
+  std_err <- numeric(out_n)
+  cl_lower <- numeric(out_n)
+  cl_upper <- numeric(out_n)
+
+  run_i_nrisk <- 0
+  run_it <- 0
+  cum_dist <- 0
+
+  for (k in seq_along(u_times)) {
+    t_k <- u_times[k]
+    n_risk[k] <- sum(time_s >= t_k)
+    at_time <- time_s == t_k & event_s == 1
+    n_event_out[k] <- sum(at_time)
+    weight_sum[k] <- sum(e_wght_s[at_time])
+
+    # Nelson estimator: dist = sum(weight) / n_risk
+    dist_k <- if (n_risk[k] > 0) weight_sum[k] / n_risk[k] else 0
+    cum_dist <- cum_dist + dist_k
+    cumhaz[k] <- cum_dist
+
+    # Variance and lognormal CL (running accumulators)
+    if (n_risk[k] > 0) run_i_nrisk <- run_i_nrisk + 1 / n_risk[k]
+    run_it <- run_it + n_event_out[k]
+
+    if (run_it > 0 && cum_dist > 0) {
+      var_cef <- run_i_nrisk * cum_dist / run_it
+      std_err[k] <- sqrt(var_cef)
+
+      sigma2 <- log(run_i_nrisk / (run_it * cum_dist) + 1)
+      sigma <- sqrt(sigma2)
+      mu_ln <- log(cum_dist) - sigma2 / 2
+
+      cl_upper[k] <- exp(mu_ln + z_alpha * sigma)
+      cl_lower[k] <- exp(mu_ln - z_alpha * sigma)
+    }
+  }
+
+  # Interval hazard
+  lag_cumhaz <- c(0, cumhaz[-out_n])
+  lag_time <- c(0, u_times[-out_n])
+  delta_t <- u_times - lag_time
+  hazard <- rep(NA_real_, out_n)
+  idx <- delta_t > 0
+  hazard[idx] <- (cumhaz[idx] - lag_cumhaz[idx]) / delta_t[idx]
+
+  result <- data.frame(
+    time       = u_times,
+    n_risk     = n_risk,
+    n_event    = n_event_out,
+    weight_sum = weight_sum,
+    cumhaz     = cumhaz,
+    std_err    = std_err,
+    cl_lower   = cl_lower,
+    cl_upper   = cl_upper,
+    hazard     = hazard,
+    cum_events = cumsum(n_event_out)
+  )
+
+  class(result) <- c("hzr_nelson", "data.frame")
+  result
+}
+
+#' @rdname hzr_nelson
+#' @param x An `hzr_nelson` object.
+#' @param digits Number of decimal places for formatting.
+#' @param ... Additional arguments (ignored).
+#' @export
+print.hzr_nelson <- function(x, digits = 4, ...) {
+  cat("Nelson cumulative hazard estimate with lognormal CL\n")
+  cat("Events:", sum(x$n_event), " | Time points:", nrow(x), "\n\n")
+  display <- x
+  for (col in c("cumhaz", "std_err", "cl_lower", "cl_upper", "hazard")) {
+    display[[col]] <- round(display[[col]], digits)
+  }
+  class(display) <- "data.frame"
+  print(utils::head(display, 20), row.names = FALSE)
+  if (nrow(display) > 20) cat("... (", nrow(display) - 20, " more rows)\n")
+  invisible(x)
+}
+
+
+# =========================================================================
+# hzr_bootstrap -- Bootstrap inference for hazard models
+# =========================================================================
+
+#' Bootstrap resampling for hazard model coefficients
+#'
+#' Resample data with replacement, refit the hazard model on each
+#' replicate, and accumulate coefficient distributions. Returns a tidy
+#' data frame of per-replicate estimates with summary statistics.
+#' This is the R equivalent of the SAS `bootstrap.hazard.sas` macro.
+#'
+#' @param object A fitted `hazard` object (with `fit = TRUE`).
+#' @param n_boot Integer: number of bootstrap replicates (default 200).
+#' @param fraction Numeric in (0, 1]: fraction of data to sample per
+#'   replicate (default 1.0 for full bootstrap; < 1 for bagging).
+#' @param seed Optional integer random seed for reproducibility. When
+#'   supplied, `set.seed(seed)` is called at function entry, jumping the
+#'   global RNG to the seeded state; it is not restored on exit. Pass
+#'   `NULL` (the default) to skip the `set.seed()` call and start from
+#'   the caller's current RNG state. Note that the bootstrap consumes
+#'   random numbers either way, so the global RNG state will advance
+#'   during the call -- `seed = NULL` avoids the *reset* at entry, not
+#'   the advance during resampling.
+#' @param verbose Logical; if `TRUE`, print progress every 50 replicates.
+#'
+#' @return A list with class `"hzr_bootstrap"` containing:
+#' \describe{
+#'   \item{replicates}{Data frame with columns `replicate`, `parameter`,
+#'     and `estimate` -- one row per parameter per successful replicate.}
+#'   \item{summary}{Data frame with columns `parameter`, `n`, `pct`,
+#'     `mean`, `sd`, `min`, `max`, `ci_lower`, `ci_upper` -- one row per
+#'     parameter.}
+#'   \item{n_success}{Number of successfully converged replicates.}
+#'   \item{n_failed}{Number of replicates that failed to converge.}
+#' }
+#'
+#' @examples
+#' \donttest{
+#' data(avc)
+#' avc <- na.omit(avc)
+#' fit <- hazard(
+#'   survival::Surv(int_dead, dead) ~ age + mal,
+#'   data  = avc,
+#'   dist  = "weibull",
+#'   theta = c(mu = 0.01, nu = 0.5, 0, 0),
+#'   fit   = TRUE
+#' )
+#' bs <- hzr_bootstrap(fit, n_boot = 50, seed = 123)
+#' print(bs)
+#' }
+#'
+#' @seealso [hazard()] for model fitting, [vcov.hazard()] for
+#'   Hessian-based standard errors.
+#' @export
+hzr_bootstrap <- function(object, n_boot = 200L, fraction = 1.0,
+                           seed = NULL, verbose = FALSE) {
+  if (!inherits(object, "hazard")) {
+    stop("'object' must be a fitted hazard object.", call. = FALSE)
+  }
+  if (is.null(object$fit$theta) ||
+      (is.logical(object$fit$converged) && is.na(object$fit$converged))) {
+    stop("'object' has no fitted parameters. Refit with fit = TRUE.",
+         call. = FALSE)
+  }
+
+  n_boot <- as.integer(n_boot)
+  if (n_boot < 1L) stop("'n_boot' must be at least 1.", call. = FALSE)
+  if (fraction <= 0 || fraction > 1) {
+    stop("'fraction' must be in (0, 1].", call. = FALSE)
+  }
+
+  if (!is.null(seed)) set.seed(seed)
+
+  # Reconstruct the call components
+  cl <- object$call
+  orig_data <- eval(cl$data, envir = parent.frame())
+  n_obs <- nrow(orig_data)
+  sample_size <- max(1L, as.integer(n_obs * fraction))
+
+  # Parameter names from the fitted model. Shape parameters (e.g. mu, nu) are
+  # named in theta, but covariate betas often come through with empty names.
+  # Covariate coefficients occupy the last ncol(x) positions of theta; fill
+  # any blanks within that block from the design matrix column names by
+  # relative index, so downstream pivots (e.g. reshape(wide)) get a distinct
+  # column per covariate -- even when some betas are already named and
+  # others are not.
+  param_names <- names(object$fit$theta)
+  if (is.null(param_names)) {
+    param_names <- character(length(object$fit$theta))
+  }
+  if (!is.null(object$data$x)) {
+    x_names <- colnames(object$data$x)
+    p <- ncol(object$data$x)
+    n_theta <- length(param_names)
+    if (!is.null(x_names) && p > 0L && n_theta >= p) {
+      cov_idx <- seq.int(n_theta - p + 1L, n_theta)
+      blank_in_block <- !nzchar(param_names[cov_idx])
+      param_names[cov_idx[blank_in_block]] <- x_names[blank_in_block]
+    }
+  }
+  still_blank <- !nzchar(param_names)
+  if (any(still_blank)) {
+    param_names[still_blank] <- paste0("param_", which(still_blank))
+  }
+
+  # Accumulate results
+  rep_list <- vector("list", n_boot)
+  n_success <- 0L
+  n_failed <- 0L
+
+  for (b in seq_len(n_boot)) {
+    if (verbose && b %% 50 == 0) {
+      cat("Bootstrap replicate", b, "/", n_boot, "\n")
+    }
+
+    # Resample with replacement
+    idx <- sample.int(n_obs, size = sample_size, replace = TRUE)
+    boot_data <- orig_data[idx, , drop = FALSE] # nolint: object_usage_linter.
+
+    # Refit using the same call but with resampled data
+    # (boot_data is referenced via quote() inside eval -- lintr cannot trace this)
+    boot_fit <- tryCatch({
+      cl_boot <- cl
+      cl_boot$data <- quote(boot_data)
+      cl_boot$fit <- TRUE
+      eval(cl_boot)
+    }, error = function(e) NULL)
+
+    if (!is.null(boot_fit) && is.finite(boot_fit$fit$objective)) {
+      n_success <- n_success + 1L
+      theta_b <- boot_fit$fit$theta
+      rep_list[[b]] <- data.frame(
+        replicate = b,
+        parameter = param_names[seq_along(theta_b)],
+        estimate  = as.numeric(theta_b),
+        stringsAsFactors = FALSE
+      )
+    } else {
+      n_failed <- n_failed + 1L
+    }
+  }
+
+  # Combine replicates
+  replicates <- do.call(rbind, Filter(Negate(is.null), rep_list))
+  if (is.null(replicates)) {
+    replicates <- data.frame(replicate = integer(0),
+                              parameter = character(0),
+                              estimate = numeric(0),
+                              stringsAsFactors = FALSE)
+  }
+  rownames(replicates) <- NULL
+
+  # Summary statistics per parameter
+  if (nrow(replicates) > 0) {
+    summary_list <- lapply(split(replicates, replicates$parameter), function(d) {
+      data.frame(
+        parameter = d$parameter[1],
+        n         = nrow(d),
+        pct       = 100 * nrow(d) / n_boot,
+        mean      = mean(d$estimate),
+        sd        = stats::sd(d$estimate),
+        min       = min(d$estimate),
+        max       = max(d$estimate),
+        ci_lower  = stats::quantile(d$estimate, 0.025),
+        ci_upper  = stats::quantile(d$estimate, 0.975),
+        stringsAsFactors = FALSE
+      )
+    })
+    summary_df <- do.call(rbind, summary_list)
+    rownames(summary_df) <- NULL
+    # Sort by parameter order in the original model
+    idx_order <- match(summary_df$parameter, param_names)
+    summary_df <- summary_df[order(idx_order), ]
+  } else {
+    summary_df <- data.frame(parameter = character(0), n = integer(0),
+                              pct = numeric(0), mean = numeric(0),
+                              sd = numeric(0), min = numeric(0),
+                              max = numeric(0), ci_lower = numeric(0),
+                              ci_upper = numeric(0),
+                              stringsAsFactors = FALSE)
+  }
+
+  result <- list(
+    replicates = replicates,
+    summary    = summary_df,
+    n_success  = n_success,
+    n_failed   = n_failed
+  )
+  class(result) <- "hzr_bootstrap"
+  result
+}
+
+#' @rdname hzr_bootstrap
+#' @param x An `hzr_bootstrap` object.
+#' @param digits Number of decimal places for formatting.
+#' @param ... Additional arguments (ignored).
+#' @export
+print.hzr_bootstrap <- function(x, digits = 4, ...) {
+  cat("Bootstrap inference for hazard model\n")
+  cat("Replicates:", x$n_success, "successful,", x$n_failed, "failed\n\n")
+  if (nrow(x$summary) > 0) {
+    display <- x$summary
+    for (col in c("pct", "mean", "sd", "min", "max",
+                   "ci_lower", "ci_upper")) {
+      display[[col]] <- round(display[[col]], digits)
+    }
+    print(display, row.names = FALSE)
+  }
+  invisible(x)
+}
+
+
+# =========================================================================
+# hzr_competing_risks -- Cumulative incidence with Greenwood variance
+# =========================================================================
+
+#' Competing risks cumulative incidence
+#'
+#' Compute cumulative incidence functions for multiple competing event
+#' types using the Aalen-Johansen estimator with Greenwood variance.
+#' This is the R equivalent of the SAS `markov.sas` macro.
+#'
+#' Unlike the naive 1 - KM estimator (which overestimates incidence when
+#' competing risks exist), this provides the correct marginal cumulative
+#' incidence for each event type.
+#'
+#' @param time Numeric vector of follow-up times.
+#' @param event Integer vector of event type indicators:
+#'   0 = censored, 1 = event type 1, 2 = event type 2, etc.
+#'
+#' @return A data frame with one row per unique event time and columns:
+#' \describe{
+#'   \item{time}{Event time.}
+#'   \item{n_risk}{Number at risk.}
+#'   \item{n_event_1, n_event_2, ...}{Events of each type at this time.}
+#'   \item{n_censor}{Number censored at this time.}
+#'   \item{surv}{Overall event-free survival (freedom from all events).}
+#'   \item{incid_1, incid_2, ...}{Cumulative incidence for each event type.}
+#'   \item{se_surv}{Standard error of overall survival.}
+#'   \item{se_1, se_2, ...}{Standard error of each cumulative incidence.}
+#' }
+#'
+#' @examples
+#' data(valves)
+#' valves_cc <- na.omit(valves)
+#' # Combine death and PVE into a competing risks event variable
+#' # 0 = censored, 1 = death, 2 = PVE
+#' event_cr <- ifelse(valves_cc$dead == 1, 1L,
+#'                    ifelse(valves_cc$pve == 1, 2L, 0L))
+#' time_cr <- pmin(valves_cc$int_dead, valves_cc$int_pve)
+#' cr <- hzr_competing_risks(time_cr, event_cr)
+#' head(cr)
+#'
+#' @seealso [hzr_kaplan()] for single-event survival estimation.
+#' @export
+hzr_competing_risks <- function(time, event) {
+  if (!is.numeric(time) || !is.numeric(event)) {
+    stop("'time' and 'event' must be numeric vectors.", call. = FALSE)
+  }
+  if (length(time) != length(event)) {
+    stop("'time' and 'event' must have the same length.", call. = FALSE)
+  }
+
+  event_types <- sort(setdiff(unique(event), 0))
+  n_types <- length(event_types)
+  if (n_types == 0) {
+    stop("No events found (all observations are censored).", call. = FALSE)
+  }
+
+  # Sort by time
+  ord <- order(time)
+  time_s <- time[ord]
+  event_s <- event[ord]
+  n_total <- length(time_s)
+
+  # Unique event times (where at least one event occurred)
+  u_times <- sort(unique(time_s[event_s > 0]))
+  out_n <- length(u_times)
+
+  # Initialize output
+  n_risk <- numeric(out_n)
+  n_censor_out <- numeric(out_n)
+  n_event_mat <- matrix(0, nrow = out_n, ncol = n_types)
+  colnames(n_event_mat) <- paste0("n_event_", event_types)
+
+  # Cumulative incidence vectors
+  surv <- numeric(out_n)
+  incid <- matrix(0, nrow = out_n, ncol = n_types)
+  colnames(incid) <- paste0("incid_", event_types)
+
+  # Variance (diagonal of Greenwood matrix -- simplified)
+  var_surv <- numeric(out_n)
+  var_incid <- matrix(0, nrow = out_n, ncol = n_types)
+
+  prev_surv <- 1.0
+  prev_incid <- rep(0, n_types)
+  prev_var_surv <- 0
+  prev_var_incid <- rep(0, n_types)
+  at_risk <- n_total
+
+  for (k in seq_along(u_times)) {
+    t_k <- u_times[k]
+
+    # Censored before this time (between previous event time and t_k)
+    prev_t <- if (k == 1) 0 else u_times[k - 1]
+    censored_between <- sum(event_s == 0 & time_s > prev_t & time_s < t_k)
+    at_risk <- at_risk - censored_between
+
+    n_risk[k] <- at_risk
+
+    # Events and censored AT this time
+    at_time <- time_s == t_k
+    for (j in seq_along(event_types)) {
+      n_event_mat[k, j] <- sum(event_s == event_types[j] & at_time)
+    }
+    n_censor_out[k] <- sum(event_s == 0 & at_time)
+    total_events_k <- sum(n_event_mat[k, ])
+
+    # Aalen-Johansen update
+    if (at_risk > 0) {
+      # Transition probabilities
+      d_total <- total_events_k / at_risk
+      surv[k] <- prev_surv * (1 - d_total)
+
+      for (j in seq_along(event_types)) {
+        d_j <- n_event_mat[k, j] / at_risk
+        incid[k, j] <- prev_incid[j] + prev_surv * d_j
+      }
+
+      # Greenwood variance update (simplified diagonal)
+      if (at_risk > total_events_k && at_risk > 0) {
+        greenwood_term <- total_events_k / (at_risk * (at_risk - total_events_k))
+        var_surv[k] <- surv[k]^2 *
+          (prev_var_surv / max(prev_surv^2, .Machine$double.xmin) +
+             greenwood_term)
+
+        for (j in seq_along(event_types)) {
+          d_j <- n_event_mat[k, j] / at_risk
+          var_incid[k, j] <- prev_var_incid[j] +
+            prev_surv^2 * d_j * (1 - d_j) / at_risk
+        }
+      } else {
+        var_surv[k] <- prev_var_surv
+        var_incid[k, ] <- prev_var_incid
+      }
+    } else {
+      surv[k] <- prev_surv
+      incid[k, ] <- prev_incid
+      var_surv[k] <- prev_var_surv
+      var_incid[k, ] <- prev_var_incid
+    }
+
+    # Decrease at-risk by events + censored AT this time
+    at_risk <- at_risk - total_events_k - n_censor_out[k]
+
+    prev_surv <- surv[k]
+    prev_incid <- incid[k, ]
+    prev_var_surv <- var_surv[k]
+    prev_var_incid <- var_incid[k, ]
+  }
+
+  # Assemble result
+  result <- data.frame(
+    time     = u_times,
+    n_risk   = n_risk,
+    n_event_mat,
+    n_censor = n_censor_out,
+    surv     = surv,
+    incid,
+    se_surv  = sqrt(pmax(var_surv, 0)),
+    stringsAsFactors = FALSE
+  )
+
+  # Add SE columns for each event type
+  for (j in seq_along(event_types)) {
+    result[[paste0("se_", event_types[j])]] <-
+      sqrt(pmax(var_incid[, j], 0))
+  }
+
+  class(result) <- c("hzr_competing_risks", "data.frame")
+  result
+}
+
+#' @rdname hzr_competing_risks
+#' @param x An `hzr_competing_risks` object.
+#' @param digits Number of decimal places for formatting.
+#' @param ... Additional arguments (ignored).
+#' @export
+print.hzr_competing_risks <- function(x, digits = 4, ...) {
+  incid_cols <- grep("^incid_", names(x), value = TRUE)
+  cat("Competing risks cumulative incidence\n")
+  cat("Event types:", length(incid_cols), " | Time points:", nrow(x), "\n")
+  if (nrow(x) > 0) {
+    cat("Final survival:", round(x$surv[nrow(x)], digits), "\n")
+    for (col in incid_cols) {
+      cat("Final", col, ":", round(x[[col]][nrow(x)], digits), "\n")
+    }
+  }
+  cat("\n")
+  display <- x
+  for (col in c("surv", incid_cols, "se_surv",
+                 grep("^se_\\d", names(x), value = TRUE))) {
+    if (col %in% names(display)) {
+      display[[col]] <- round(display[[col]], digits)
+    }
+  }
+  class(display) <- "data.frame"
+  print(utils::head(display, 15), row.names = FALSE)
+  if (nrow(display) > 15) cat("... (", nrow(display) - 15, " more rows)\n")
+  invisible(x)
+}
