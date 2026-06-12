@@ -44,6 +44,14 @@ Unlike the naive 1 - KM estimator (which overestimates incidence when
 competing risks exist), this provides the correct marginal cumulative
 incidence for each event type.
 }
+\note{
+This estimator is \strong{unweighted}: every observation contributes a
+unit count to the at-risk and event tallies. There is no \code{weights}
+argument, so case or inverse-probability weights are not yet supported
+for competing-risks incidence (unlike \code{\link[=hazard]{hazard()}}, which accepts
+\code{weights}). Pre-expand weighted rows to individual records if an
+approximate weighted estimate is needed.
+}
 \examples{
 data(valves)
 valves_cc <- na.omit(valves)
@@ -55,6 +63,14 @@ time_cr <- pmin(valves_cc$int_dead, valves_cc$int_pve)
 cr <- hzr_competing_risks(time_cr, event_cr)
 head(cr)
 
+}
+\references{
+Aalen O, Johansen S (1978). An empirical transition matrix for
+non-homogeneous Markov chains based on censored observations.
+\emph{Scand J Statist} 5(3):141--150.
+
+Kalbfleisch JD, Prentice RL (1980). \emph{The Statistical Analysis of Failure
+Time Data.} Wiley, New York.
 }
 \seealso{
 \code{\link[=hzr_kaplan]{hzr_kaplan()}} for single-event survival estimation.

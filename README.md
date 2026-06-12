@@ -1,7 +1,9 @@
 # TemporalHazard
 
 <!-- badges: start -->
-[![version](https://img.shields.io/badge/version-1.0.3-blue.svg)](https://github.com/ehrlinger/temporal_hazard)
+[![CRAN status](https://www.r-pkg.org/badges/version/TemporalHazard)](https://CRAN.R-project.org/package=TemporalHazard)
+[![CRAN downloads](https://cranlogs.r-pkg.org/badges/TemporalHazard)](https://CRAN.R-project.org/package=TemporalHazard)
+[![CRAN downloads total](https://cranlogs.r-pkg.org/badges/grand-total/TemporalHazard)](https://CRAN.R-project.org/package=TemporalHazard)
 [![R-CMD-check](https://github.com/ehrlinger/temporal_hazard/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/ehrlinger/temporal_hazard/actions/workflows/R-CMD-check.yaml)
 [![Codecov test coverage](https://codecov.io/gh/ehrlinger/temporal_hazard/branch/main/graph/badge.svg)](https://app.codecov.io/gh/ehrlinger/temporal_hazard?branch=main)
 [![lint](https://github.com/ehrlinger/temporal_hazard/actions/workflows/lint.yaml/badge.svg)](https://github.com/ehrlinger/temporal_hazard/actions/workflows/lint.yaml)
@@ -54,8 +56,10 @@ adjustment, prediction, and extrapolation.
 | Covariance and correlation matrix estimation | :white_check_mark: |
 | Delta-method confidence limits on `predict()` (`se.fit = TRUE`) | :white_check_mark: |
 | Seven `hzr_*` utility functions (Kaplan-Meier, Nelson, GOF, deciles, calibration, bootstrap, competing risks) | :white_check_mark: |
+| Per-phase confidence limits (`decompose = TRUE, se.fit = TRUE`) | :construction: |
+| 4-phase example dataset and vignette | :construction: |
 
-:white_check_mark: = implemented | :construction: = planned
+:white_check_mark: = implemented &nbsp;&nbsp; :construction: = planned
 
 ## Installation
 

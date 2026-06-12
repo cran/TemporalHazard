@@ -1,6 +1,6 @@
 Package: TemporalHazard
 Title: Temporal Parametric Hazard Modeling
-Version: 1.0.3
+Version: 1.1.0
 Authors@R: person("John", "Ehrlinger", email = "john.ehrlinger@gmail.com", role = c("aut", "cre", "cph"))
 URL: https://ehrlinger.github.io/temporal_hazard/,
         https://github.com/ehrlinger/temporal_hazard
@@ -31,8 +31,8 @@ Config/testthat/edition: 3
 Config/roxygen2/version: 8.0.0
 RoxygenNote: 8.0.0
 NeedsCompilation: no
-Packaged: 2026-05-27 16:10:29 UTC; ehrlinj
+Packaged: 2026-06-12 16:43:32 UTC; ehrlinj
 Author: John Ehrlinger [aut, cre, cph]
 Maintainer: John Ehrlinger <john.ehrlinger@gmail.com>
 Repository: CRAN
-Date/Publication: 2026-05-30 13:30:08 UTC
+Date/Publication: 2026-06-12 17:30:02 UTC

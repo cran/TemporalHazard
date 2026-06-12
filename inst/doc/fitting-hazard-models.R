@@ -170,3 +170,148 @@ fit_pve <- hazard(
 
 fit_pve
 
+
+## -----------------------------------------------------------------------------
+#| label: interval-simulate
+set.seed(101)
+n         <- 400
+visit_gap <- 6   # months between visits
+
+# True event times: Weibull mu = 0.025, nu = 1.0 (median ~28 months)
+true_time <- rexp(n, rate = 0.025)  # nu=1 → exponential
+
+n_visits  <- sample(4:8, n, replace = TRUE)
+
+status     <- integer(n)
+time       <- numeric(n)
+time_lower <- numeric(n)
+time_upper <- numeric(n)
+
+for (i in seq_len(n)) {
+  visits <- seq(visit_gap, n_visits[i] * visit_gap, by = visit_gap)
+  t_ev   <- true_time[i]
+  brk    <- findInterval(t_ev, c(0, visits))  # which interval contains t_ev
+
+  if (brk > length(visits)) {
+    # Event after last visit: right-censored.
+    # time_lower = 0: with H(time_lower) = H(0) = 0, the right-censored
+    # contribution reduces to -(H(time) - H(0)) = -H(time), which is correct.
+    status[i]     <- 0L
+    time[i]       <- max(visits)
+    time_lower[i] <- 0
+    time_upper[i] <- max(visits)
+  } else {
+    # Event within the visit window: interval-censored in (lower, upper)
+    lower_bound   <- if (brk == 1L) 0 else visits[brk - 1L]
+    upper_bound   <- visits[brk]
+    status[i]     <- 2L
+    time[i]       <- lower_bound
+    time_lower[i] <- lower_bound
+    time_upper[i] <- upper_bound
+  }
+}
+
+table(status)
+
+
+## -----------------------------------------------------------------------------
+#| label: interval-fit
+fit_ic <- hazard(
+  time       = time,
+  status     = status,
+  time_lower = time_lower,
+  time_upper = time_upper,
+  dist  = "weibull",
+  theta = c(mu = 0.025, nu = 1.0),
+  fit   = TRUE
+)
+
+fit_ic
+
+
+## -----------------------------------------------------------------------------
+#| label: interval-vs-naive
+# Naive: treat each interval-censored row as an exact event at time_upper
+# (the visit when the death was first recorded)
+fit_naive <- hazard(
+  time   = ifelse(status == 2L, time_upper, time),
+  status = ifelse(status == 2L, 1L,         status),
+  dist  = "weibull",
+  theta = c(mu = 0.025, nu = 1.0),
+  fit   = TRUE
+)
+
+# Compare MLEs; true parameters are mu = 0.025, nu = 1.0
+rbind(
+  interval_censored = round(coef(fit_ic)[1:2],   4),
+  naive_exact_upper = round(coef(fit_naive)[1:2], 4),
+  truth             = c(mu = 0.025, nu = 1.0)
+)
+
+
+## -----------------------------------------------------------------------------
+#| label: starting-values
+nel <- hzr_nelson(cabgkul$int_dead, cabgkul$dead)
+
+# Drop the zero-time boundary point before log-transforming
+nel_clean <- nel[nel$time > 0 & nel$cumhaz > 0, ]
+log_t <- log(nel_clean$time)
+log_H <- log(nel_clean$cumhaz)
+
+lm_fit  <- lm(log_H ~ log_t)
+nu_hat  <- unname(coef(lm_fit)[2])
+mu_hat  <- exp(unname(coef(lm_fit)[1]) / nu_hat)
+c(mu = round(mu_hat, 4), nu = round(nu_hat, 4))
+
+
+## -----------------------------------------------------------------------------
+#| label: fig-cumhaz-shape
+#| fig-cap: "Nelson-Aalen cumulative hazard for CABGKUL — three-phase shape visible as two kinks"
+#| fig-width: 7
+#| fig-height: 4
+ggplot(data.frame(time = nel$time, cumhaz = nel$cumhaz),
+       aes(time, cumhaz)) +
+  geom_step(colour = "#D55E00", linewidth = 0.7) +
+  labs(x = "Months after CABG", y = "Cumulative hazard") +
+  theme_minimal()
+
+
+## -----------------------------------------------------------------------------
+#| label: overparameterized
+set.seed(42)
+fit_3ph <- hazard(
+  Surv(int_dead, dead) ~ 1,
+  data   = avc,
+  dist   = "multiphase",
+  phases = list(
+    early    = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1,
+                          fixed = "shapes"),
+    constant = hzr_phase("constant"),
+    late     = hzr_phase("g3", tau = 5, gamma = 3, alpha = 1, eta = 1,
+                          fixed = "shapes")
+  ),
+  fit = TRUE, control = list(n_starts = 5, maxit = 1000)
+)
+
+# Scale magnitudes: exp(log_mu) ≈ 0 for any phase the data doesn't support
+log_mu_idx <- grep("log_mu", names(coef(fit_3ph)))
+round(exp(coef(fit_3ph)[log_mu_idx]), 6)
+
+
+## -----------------------------------------------------------------------------
+#| label: nstarts
+set.seed(42)
+fit_robust <- hazard(
+  Surv(int_dead, dead) ~ 1,
+  data   = avc,
+  dist   = "multiphase",
+  phases = list(
+    early    = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1,
+                          fixed = "shapes"),
+    constant = hzr_phase("constant")
+  ),
+  fit     = TRUE,
+  control = list(n_starts = 10, maxit = 1000)
+)
+fit_robust$fit$converged
+
