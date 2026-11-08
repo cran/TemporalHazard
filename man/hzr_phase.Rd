@@ -15,13 +15,14 @@ hzr_phase(
   alpha = 1,
   eta = 1,
   formula = NULL,
-  fixed = character(0)
+  fixed = character(0),
+  constraint = c("none", "alpha_gamma_eta", "eta_gamma")
 )
 
 \method{print}{hzr_phase}(x, ...)
 }
 \arguments{
-\item{type}{Character; the phase's temporal shape --- one of \code{"cdf"}
+\item{type}{Character; the phase's temporal shape, one of \code{"cdf"}
 (early resolving risk), \code{"hazard"} (accumulating G1 aging risk), \code{"g3"}
 (late rising risk, the original C/SAS late phase), or \code{"constant"} (flat
 background rate).  See the \strong{Phase types} section for what each means and
@@ -37,22 +38,29 @@ SAS early: \code{THALF}/\code{RHO}.}
 \item{m}{Numeric scalar; initial shape exponent.  Used for \code{"cdf"} and
 \code{"hazard"} phases.  SAS early: \code{M}.}
 
-\item{tau}{Positive scalar; scale parameter for \code{"g3"} phases.
+\item{tau}{Positive finite scalar; scale parameter for \code{"g3"} phases.
 SAS late: \code{TAU}.}
 
-\item{gamma}{Positive scalar; time exponent for \code{"g3"} phases.
+\item{gamma}{Positive finite scalar; time exponent for \code{"g3"} phases.
 SAS late: \code{GAMMA}.}
 
 \item{alpha}{Non-negative scalar; shape parameter for \code{"g3"} phases.
 When \code{alpha > 0}, the generic G3 formula is used; \code{alpha = 0} gives the
 exponential limiting case.  SAS late: \code{ALPHA}.}
 
-\item{eta}{Positive scalar; outer exponent for \code{"g3"} phases.
+\item{eta}{Positive finite scalar; outer exponent for \code{"g3"} phases.
 SAS late: \code{ETA}.}
 
 \item{formula}{Optional one-sided formula (e.g. \code{~ age + nyha}) for
-phase-specific covariates.  When \code{NULL} (default), the phase inherits
-the global formula from \code{\link[=hazard]{hazard()}}.}
+phase-specific covariates.  It is evaluated in the \code{data} given to
+\code{\link[=hazard]{hazard()}}, so without \code{data} \code{\link[=hazard]{hazard()}} refuses it, unless it builds
+nothing either way: an intercept-only \code{~ 1} with no global \code{x}.
+The phase's scale parameter plays the role of an intercept, so the
+design never has one: removing it (\code{~ 0 + age}, \code{~ age - 1}) is
+ignored with a warning, and builds the design of \code{~ age}.
+When \code{NULL} (default), the phase inherits the global design from
+\code{\link[=hazard]{hazard()}}: the global formula's covariates, or \code{x} on the vector
+interface.}
 
 \item{fixed}{Character vector naming shape parameters to hold fixed during
 optimization.  Valid names for \code{"cdf"}/\code{"hazard"}: \code{"t_half"}, \code{"nu"},
@@ -62,6 +70,44 @@ four).  Fixed parameters are held at their starting values; only \code{mu}
 (and covariates) are estimated.  Ignored for \code{"constant"} phases.
 This mirrors the SAS/C HAZARD workflow where shapes are typically fixed
 and only scale parameters are estimated.}
+
+\item{constraint}{For \code{"g3"} phases, a rule that \emph{derives} one shape from
+the others rather than estimating it:
+\describe{
+\item{\code{"none"}}{(default) every shape is estimated or fixed.}
+\item{\code{"alpha_gamma_eta"}}{\eqn{\alpha = \gamma\eta/2}, so that
+\eqn{\gamma\eta/\alpha = 2}. SAS/C: \code{FIXGAE2}.}
+\item{\code{"eta_gamma"}}{\eqn{\eta = 2/\gamma}, so that
+\eqn{\gamma\eta = 2}. SAS/C: \code{FIXGE2}.}
+}
+At \code{alpha = 1}, \code{hzr_phase()}'s default, the g3 form is
+\eqn{(t/\tau)^{\gamma\eta}}{(t/tau)^(gamma*eta)} (see \code{\link[=hzr_decompos_g3]{hzr_decompos_g3()}}),
+which depends on
+\eqn{\gamma} and \eqn{\eta} only through their product. So
+\eqn{\gamma} and \eqn{\eta} are not separately identified there: under
+\code{"eta_gamma"} the product is fixed at 2 and \eqn{\gamma} is not
+identified at all, and with both estimated only the product is. With
+\code{alpha} \emph{fixed} at 1, \code{\link[=hazard]{hazard()}} therefore fits the phase as PROC HAZARD
+does: \code{tau} is held at 1 and the product is carried by one parameter
+(under \code{"eta_gamma"}, \eqn{\gamma = 2} and \eqn{\eta = 1} are both held),
+with a warning and a record in \code{fit$fit$boundary}. Under \code{"eta_gamma"} a
+fixed \code{alpha} above 1 is refused, as PROC HAZARD refuses it, and a free
+one started at 1 or above starts at 2/3 instead. A free \code{alpha} that
+comes to rest near 1 can still leave \eqn{\gamma} undetermined; the
+weak-direction warning names it when the Hessian shows it.
+The derived parameter follows the others at every step of the
+optimization, so it is not a free parameter and cannot be named in
+\code{fixed}; \code{"shapes"} leaves it out. Its starting value is computed from the
+others, and a value you supply for it, here or in the \code{theta} given to
+\code{\link[=hazard]{hazard()}}, is replaced, with a warning when it differs. Under
+\code{hazard(fit = FALSE)} that replacement is made only when no phase carries
+covariates, since otherwise its slot in \code{theta} is not known until the
+design is built; \code{hazard()} warns when it could not be made. Its
+standard error in \code{\link[=vcov]{vcov()}} is the delta-method one, carried from the
+parameters it is derived from, so confidence limits from \code{\link[=predict]{predict()}}
+include its uncertainty. Only one constraint per phase: SAS's
+\code{FIXGE2} and \code{FIXGAE2} together force \eqn{\alpha = 1} and fix \code{tau},
+\code{gamma} and \code{eta}, which is better written as those fixed values.}
 
 \item{x}{An \code{hzr_phase} object (for \code{print.hzr_phase()}).}
 
@@ -80,6 +126,7 @@ An S3 object of class \code{"hzr_phase"} with elements:
 \item{eta}{Outer exponent (g3 phases).}
 \item{formula}{Phase-specific formula or \code{NULL}.}
 \item{fixed}{Character vector of fixed parameter names (may be empty).}
+\item{constraint}{The shape constraint (g3 phases).}
 }
 }
 \description{
@@ -96,7 +143,7 @@ Each phase is one term \eqn{j} in the additive cumulative hazard
       \Phi_j(t)}
 
 where \eqn{\mu_j(\mathbf{x}) = \exp(\alpha_j + \mathbf{x}_j^\top
-\boldsymbol{\beta}_j)} is the phase-specific log-linear scale and
+\beta_j)} is the phase-specific log-linear scale and
 \eqn{\Phi_j(t)} is the temporal shape selected by \code{type} (below).  The
 \code{t_half}/\code{nu}/\code{m} (or g3 \code{tau}/\code{gamma}/\code{alpha}/\code{eta}) arguments set the
 starting values for that shape; \code{formula} attaches the covariates
@@ -112,22 +159,22 @@ clinical model combines an \emph{early}, a \emph{constant}, and a \emph{late} ph
 the total hazard can fall, level off, and rise again.
 
 \describe{
-\item{\code{"cdf"} --- early, resolving risk}{Named for the \strong{c}umulative
+\item{\code{"cdf"}: early, resolving risk}{Named for the \strong{c}umulative
 \strong{d}istribution \strong{f}unction: the phase contributes \eqn{\Phi(t) = G(t)},
 the bounded CDF of the temporal decomposition (\eqn{0} at \eqn{t = 0},
 rising to a ceiling of \eqn{1}).  Because it saturates, the \emph{hazard} it
-adds, \eqn{\mu\,g(t)}, peaks early and then decays toward zero --- the
+adds, \eqn{\mu\,g(t)}, peaks early and then decays toward zero (the
 signature of a one-time insult that patients either succumb to or survive
-past, e.g. peri-operative mortality.  Shape set by \code{t_half}, \code{nu}, \code{m}.
+past, e.g. peri-operative mortality).  Shape set by \code{t_half}, \code{nu}, \code{m}.
 SAS/C equivalent: the Early (G1) phase.}
-\item{\code{"hazard"} --- accumulating aging risk (G1 family)}{Named because the
+\item{\code{"hazard"}: accumulating aging risk (G1 family)}{Named because the
 phase contributes a \strong{cumulative hazard} built from the same G1 family:
 \eqn{\Phi(t) = -\log(1 - G(t))}, which is unbounded and monotone
 increasing.  Its hazard \eqn{\mu\,h(t)} rises without leveling off, so it
 models risk that grows as subjects age.  This is an alternative late-risk
 form derived from G1; for the original SAS/C late phase prefer \code{"g3"}.
 Shape set by \code{t_half}, \code{nu}, \code{m}.}
-\item{\code{"g3"} --- late, rising risk (original C/SAS late phase)}{Named for
+\item{\code{"g3"}: late, rising risk (original C/SAS late phase)}{Named for
 the \strong{G3} (third) decomposition family used by the original HAZARD
 program for the late phase.  It contributes \eqn{\Phi(t) = G_3(t)} from
 \code{\link[=hzr_decompos_g3]{hzr_decompos_g3()}}, an unbounded intensity with its own four-parameter
@@ -136,11 +183,11 @@ G1-derived \code{"hazard"} form for capturing accelerating late mortality
 (e.g. structural valve deterioration years after surgery).  Use this when
 reproducing classic three-phase HAZARD models.  SAS/C equivalent: the
 Late (G3) phase.}
-\item{\code{"constant"} --- flat background rate}{A time-invariant hazard:
+\item{\code{"constant"}: flat background rate}{A time-invariant hazard:
 \eqn{\Phi(t) = t}, so the added hazard \eqn{\mu} is constant (the
 exponential model).  It represents the steady, ongoing risk present at all
 follow-up times, independent of how long ago the time origin was.  Takes
-no shape parameters --- only its scale \eqn{\mu} (and any covariates) is
+no shape parameters; only its scale \eqn{\mu} (and any covariates) is
 estimated.  SAS/C equivalent: the Constant (G2) phase.}
 }
 
@@ -161,6 +208,10 @@ early_fixed <- hzr_phase("cdf", t_half = 0.5, nu = 2, m = 0,
                           fixed = "shapes")
 late_fixed  <- hzr_phase("g3", tau = 1, gamma = 3, alpha = 1, eta = 1,
                           fixed = "shapes")
+
+# Derive alpha from gamma and eta (SAS/C FIXGAE2)
+late_gae2 <- hzr_phase("g3", tau = 14, gamma = 22, eta = 0.18,
+                        constraint = "alpha_gamma_eta")
 
 # Fix only some parameters
 early_partial <- hzr_phase("cdf", t_half = 0.5, nu = 2, m = 0,

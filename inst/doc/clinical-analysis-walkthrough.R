@@ -1,7 +1,15 @@
 ## -----------------------------------------------------------------------------
 #| include: false
+# R CMD build installs the package into R_BUILD_TEMPLIB. A build launched
+# through callr (rcmdcheck, devtools) passes Quarto's R session a profile
+# that resets .libPaths() without it, and every chunk skipped (#276).
+templib <- Sys.getenv("R_BUILD_TEMPLIB")
+if (dir.exists(templib)) .libPaths(c(templib, .libPaths()))
 has_pkg <- requireNamespace("TemporalHazard", quietly = TRUE)
 has_ggplot2 <- requireNamespace("ggplot2", quietly = TRUE)
+# On CI a package that cannot load must fail the build, not skip every
+# chunk and pass over nothing (#276). loadNamespace() says why it failed.
+if (nzchar(Sys.getenv("CI"))) for (p in c("TemporalHazard", "ggplot2")) loadNamespace(p)
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>",
@@ -29,7 +37,7 @@ head(km)
 
 ## -----------------------------------------------------------------------------
 #| label: fig-km-baseline
-#| fig-cap: "Kaplan-Meier survival estimate for AVC patients (n = 310)"
+#| fig-cap: "Kaplan-Meier survival estimate for AVC patients (n = 305)"
 #| eval: !expr requireNamespace("TemporalHazard", quietly = TRUE) && requireNamespace("ggplot2", quietly = TRUE)
 km_df <- data.frame(
   time     = km$time,
@@ -207,32 +215,52 @@ summary(fit_mv)
 
 ## -----------------------------------------------------------------------------
 #| label: stepwise-forward
-#| eval: !expr requireNamespace("TemporalHazard", quietly = TRUE)
-base_mp <- hazard(
-  survival::Surv(int_dead, dead) ~ 1,
-  data   = avc,
-  dist   = "multiphase",
-  phases = list(
-    early    = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1,
-                          fixed = "shapes"),
-    constant = hzr_phase("constant")
-  ),
-  fit     = TRUE,
-  control = list(n_starts = 3, maxit = 500)
-)
+#| eval: false
+# base_mp <- hazard(
+#   survival::Surv(int_dead, dead) ~ 1,
+#   data   = avc,
+#   dist   = "multiphase",
+#   phases = list(
+#     early    = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1,
+#                           fixed = "shapes"),
+#     constant = hzr_phase("constant")
+#   ),
+#   fit     = TRUE,
+#   control = list(n_starts = 3, maxit = 500)
+# )
+# 
+# fit_step <- hzr_stepwise(
+#   base_mp,
+#   scope     = list(
+#     early    = ~ age + status + mal + com_iv,
+#     constant = ~ age + status + mal + com_iv
+#   ),
+#   data      = avc,
+#   direction = "both",
+#   criterion = "wald",
+#   trace     = FALSE,
+#   control   = list(n_starts = 2, maxit = 500)
+# )
 
-fit_step <- hzr_stepwise(
-  base_mp,
-  scope     = list(
-    early    = ~ age + status + mal + com_iv,
-    constant = ~ age + status + mal + com_iv
-  ),
-  data      = avc,
-  direction = "both",
-  criterion = "wald",
-  trace     = FALSE,
-  control   = list(n_starts = 2, maxit = 500)
-)
+
+## -----------------------------------------------------------------------------
+#| label: stepwise-forward-load
+#| include: false
+#| eval: !expr requireNamespace("TemporalHazard", quietly = TRUE)
+# Refitting the chunk above takes long enough to push R CMD check past
+# CRAN's time limit, so data-raw/vignette-fit-step.R stores its result and
+# test-vignette-fit-step.R refits and compares. Without the file, refit.
+stored <- system.file("extdata", "vignette-fit-step.rds",
+                      package = "TemporalHazard")
+if (nzchar(stored)) {
+  fit_step <- readRDS(stored)
+} else {
+  eval(parse(text = knitr::knit_code$get("stepwise-forward")))
+}
+
+
+## -----------------------------------------------------------------------------
+#| eval: !expr requireNamespace("TemporalHazard", quietly = TRUE)
 fit_step
 
 
@@ -246,9 +274,11 @@ fit_step$steps[, c("step_num", "action", "variable", "phase",
 #| eval: !expr requireNamespace("TemporalHazard", quietly = TRUE)
 logLik_manual <- fit_mv$fit$objective
 logLik_step   <- fit_step$fit$objective
+n_free <- function(fit) sum(!fit$fit$fixed_mask)
 c(manual = logLik_manual, stepwise = logLik_step,
-  aic_manual = 2 * length(fit_mv$fit$theta) - 2 * logLik_manual,
-  aic_step   = 2 * length(fit_step$fit$theta) - 2 * logLik_step)
+  free_manual = n_free(fit_mv), free_step = n_free(fit_step),
+  aic_manual = 2 * n_free(fit_mv) - 2 * logLik_manual,
+  aic_step   = 2 * n_free(fit_step) - 2 * logLik_step)
 
 
 ## -----------------------------------------------------------------------------
@@ -287,7 +317,7 @@ ggplot() +
 
 ## -----------------------------------------------------------------------------
 #| label: fig-sensitivity
-#| fig-cap: "Survival by risk profile: low-risk (blue) vs. high-risk (red)"
+#| fig-cap: "Survival by risk profile: low-risk (blue) vs. high-risk (orange)"
 #| eval: !expr requireNamespace("TemporalHazard", quietly = TRUE) && requireNamespace("ggplot2", quietly = TRUE)
 low_risk <- data.frame(
   time   = t_grid,
@@ -368,7 +398,7 @@ print(gof)
 
 ## -----------------------------------------------------------------------------
 #| label: fig-gof-survival
-#| fig-cap: "Parametric (blue) vs. Kaplan-Meier (orange) survival"
+#| fig-cap: "Parametric survival at the covariate means (blue) vs. Kaplan-Meier (orange)"
 #| eval: !expr requireNamespace("TemporalHazard", quietly = TRUE) && requireNamespace("ggplot2", quietly = TRUE)
 ggplot(gof, aes(x = time)) +
   geom_step(aes(y = km_surv * 100), colour = "#D55E00", linewidth = 0.6) +

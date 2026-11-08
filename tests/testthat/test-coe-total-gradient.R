@@ -1,0 +1,350 @@
+# Too slow for the CRAN check time budget; runs on CI and locally.
+# See "Where the check's time actually goes" in AGENTS.md.
+skip_on_cran()
+
+# ---------------------------------------------------------------------------
+# The gradient the optimizer is given under Conservation of Events (#565).
+#
+# Under CoE the objective is L(phi, c(phi)): the conserved phase's log_mu, c,
+# is re-solved from the other parameters at every evaluation. The optimizer
+# was handed the partial score at the conserved theta, which leaves out how c
+# moves with phi, and on the avc six-variable model it stopped 1.80
+# log-likelihood units short of SAS while reporting convergence.
+#
+# The oracle is a finite-difference gradient of the very objective the
+# optimizer receives, so the comparison is between the two functions that
+# have to agree, not between two analytic derivations.
+# ---------------------------------------------------------------------------
+
+# What .hzr_optim_multiphase() hands the optimizer, captured without fitting.
+.coe_optimizer_inputs <- function(...) {
+  seen <- NULL
+  local_mocked_bindings(.hzr_optim_generic = function(...) {
+    seen <<- list(...)
+    stop("captured")
+  })
+  res <- suppressWarnings(
+    try(hazard(..., dist = "multiphase", fit = TRUE), silent = TRUE)
+  )
+  if (is.null(seen)) stop("the optimizer was never reached: ", res)
+  seen
+}
+
+.coe_grad_pair <- function(inp, theta) {
+  obj <- function(p) {
+    inp$logl_fn(p, inp$time, inp$status, inp$time_lower, inp$time_upper,
+                inp$x, weights = inp$weights)
+  }
+  list(
+    analytic = unname(inp$gradient_fn(theta, inp$time, inp$status,
+                                      inp$time_lower, inp$time_upper, inp$x,
+                                      weights = inp$weights)),
+    oracle = numDeriv::grad(obj, theta, method.args = list(d = 1e-3))
+  )
+}
+
+.coe_sim <- function(n = 300, seed = 11) {
+  set.seed(seed)
+  z <- rbinom(n, 1, 0.4)
+  age <- round(rnorm(n, 0, 1), 2)
+  u <- runif(n)
+  t_event <- ifelse(u < 0.3, rexp(n, 4 * exp(0.5 * z)),
+                    rexp(n, 0.15 * exp(0.3 * age)))
+  cens <- runif(n, 0.5, 8)
+  data.frame(
+    stop = pmin(t_event, cens) + 0.01,
+    event = as.integer(t_event <= cens),
+    start = 0, z = z, age = age,
+    w = sample(c(0.5, 1, 2), n, replace = TRUE)
+  )
+}
+
+# One cell of the grid: the optimizer's gradient against the oracle at the
+# start and at two displaced points, where the score is far from zero.
+.expect_coe_gradient <- function(inp, label, conserved = NULL) {
+  env <- environment(inp$gradient_fn)
+  expect_true(isTRUE(env$use_conserve), label = paste(label, "runs under CoE"))
+  if (!is.null(conserved)) {
+    expect_identical(env$fixmu_phase, conserved, label = label)
+  }
+  expect_true(isTRUE(inp$gradient_exact),
+              label = paste(label, "declares its gradient exact"))
+  p <- length(inp$theta_start)
+  # Displaced from the start, which the warm-up may have left near an optimum.
+  offsets <- list(0.15 * cos(seq_len(p)), -0.1 * sin(2 * seq_len(p)),
+                  0.2 * sin(seq_len(p) + 1))
+  for (off in offsets) {
+    theta <- inp$theta_start + off
+    pair <- .coe_grad_pair(inp, theta)
+    # The comparison is only evidence where there is a score to compare.
+    expect_gt(max(abs(pair$oracle)), 1e-2, label = paste(label, "oracle size"))
+    expect_equal(pair$analytic, pair$oracle, tolerance = 1e-4, label = label)
+  }
+}
+
+test_that("the CoE gradient is the gradient of the CoE objective", {
+  skip_if_not_installed("numDeriv")
+  d <- .coe_sim()
+
+  # Two phases, free shapes, covariates in both.
+  two <- list(
+    early = hzr_phase("cdf", t_half = 0.3, nu = 1, m = 1, formula = ~ z),
+    constant = hzr_phase("constant", formula = ~ age)
+  )
+  inp <- .coe_optimizer_inputs(survival::Surv(stop, event) ~ 1, data = d, phases = two,
+                               control = list(n_starts = 1))
+  .expect_coe_gradient(inp, "two phases")
+
+  # Fixed shapes.
+  fixed <- list(
+    early = hzr_phase("cdf", t_half = 0.3, nu = 1, m = 1, fixed = "shapes",
+                      formula = ~ z + age),
+    constant = hzr_phase("constant", formula = ~ age)
+  )
+  inp <- .coe_optimizer_inputs(survival::Surv(stop, event) ~ 1, data = d, phases = fixed,
+                               control = list(n_starts = 1))
+  .expect_coe_gradient(inp, "fixed shapes")
+
+  # Weights.
+  inp <- .coe_optimizer_inputs(survival::Surv(stop, event) ~ 1, data = d, phases = fixed,
+                               weights = w, control = list(n_starts = 1))
+  expect_false(all(inp$weights == 1))
+  .expect_coe_gradient(inp, "weights")
+
+  # Left truncation: the conserved quantity is H(stop) - H(start).
+  set.seed(5)
+  dl <- d
+  dl$start <- pmin(runif(nrow(d), 0, 0.5), 0.6 * d$stop)
+  inp <- .coe_optimizer_inputs(survival::Surv(start, stop, event) ~ 1, data = dl,
+                               phases = fixed, control = list(n_starts = 1))
+  expect_true(any(inp$time_lower > 0))
+  .expect_coe_gradient(inp, "left truncation")
+
+  # Weights and left truncation together.
+  inp <- .coe_optimizer_inputs(survival::Surv(start, stop, event) ~ 1, data = dl,
+                               phases = fixed, weights = w,
+                               control = list(n_starts = 1))
+  expect_true(any(inp$time_lower > 0) && !all(inp$weights == 1))
+  .expect_coe_gradient(inp, "weights and truncation")
+
+  # A derived shape, whose score is folded into its sources' afterwards.
+  tied <- list(
+    early = hzr_phase("cdf", t_half = 0.3, nu = 1, m = 1, fixed = "shapes",
+                      formula = ~ z),
+    late = hzr_phase("g3", tau = 4, gamma = 2, alpha = 1, eta = 1,
+                     constraint = "eta_gamma", formula = ~ age)
+  )
+  inp <- .coe_optimizer_inputs(survival::Surv(stop, event) ~ 1, data = d,
+                               phases = tied, control = list(n_starts = 1))
+  .expect_coe_gradient(inp, "derived shape")
+})
+
+test_that("the CoE gradient is exact whichever phase is conserved", {
+  skip_if_not_installed("numDeriv")
+  d <- .coe_sim()
+  three <- list(
+    early = hzr_phase("cdf", t_half = 0.3, nu = 1, m = 1, fixed = "shapes",
+                      formula = ~ z),
+    constant = hzr_phase("constant", formula = ~ age),
+    late = hzr_phase("g3", tau = 4, gamma = 2, alpha = 1, eta = 1,
+                     fixed = "shapes", formula = ~ age)
+  )
+  seen <- character()
+  for (big in names(three)) {
+    # Which phase is conserved is chosen from the data; name it here so that
+    # every phase takes the role.
+    local_mocked_bindings(.hzr_select_fixmu_phase = function(...) big)
+    inp <- .coe_optimizer_inputs(survival::Surv(stop, event) ~ 1, data = d,
+                                 phases = three, control = list(n_starts = 1))
+    .expect_coe_gradient(inp, paste("conserving", big), conserved = big)
+    seen <- c(seen, environment(inp$gradient_fn)$fixmu_phase)
+  }
+  expect_setequal(seen, names(three))
+})
+
+test_that("where CoE has nothing to solve, the partial score is the gradient", {
+  skip_if_not_installed("numDeriv")
+  d <- .coe_sim()
+  ph <- list(
+    early = hzr_phase("cdf", t_half = 0.3, nu = 1, m = 1, fixed = "shapes",
+                      formula = ~ z),
+    constant = hzr_phase("constant", formula = ~ age)
+  )
+  inp <- .coe_optimizer_inputs(survival::Surv(stop, event) ~ 1, data = d,
+                               phases = ph, control = list(n_starts = 1))
+  env <- environment(inp$gradient_fn)
+  # Raise the free phase's scale until it alone predicts more events than
+  # were observed: the conserved phase would need a negative share, so the
+  # solve declines and its log_mu stays where it was.
+  free_mu <- setdiff(unlist(env$log_mu_positions), env$fixmu_pos)
+  theta <- inp$theta_start
+  theta[match(free_mu, env$free_idx)] <- theta[match(free_mu, env$free_idx)] + 4
+  coe <- .hzr_conserve_events(
+    env$expand_theta(theta), env$fixmu_phase, env$fixmu_pos, inp$time,
+    inp$status, env$phases, env$covariate_counts, env$x_list,
+    env$total_events, weights = inp$weights, time_lower = inp$time_lower,
+    details = TRUE
+  )
+  expect_false(coe$solved)
+  pair <- .coe_grad_pair(inp, theta)
+  expect_gt(max(abs(pair$oracle)), 1)
+  expect_equal(pair$analytic, pair$oracle, tolerance = 1e-4)
+})
+
+test_that("the default start reaches SAS's optimum on the avc model (#565)", {
+  skip_on_cran()
+  data(avc, package = "TemporalHazard", envir = environment())
+  a <- stats::na.omit(avc)
+  fit <- hazard(
+    survival::Surv(int_dead, dead) ~ 1, data = a, dist = "multiphase",
+    phases = list(
+      early = hzr_phase("cdf", t_half = 0.1512095, nu = 1.438652, m = 1,
+                        fixed = c("t_half", "nu", "m"),
+                        formula = ~ age + mal + orifice + com_iv),
+      constant = hzr_phase("constant", formula = ~ age + inc_surg)
+    ),
+    fit = TRUE, control = list(n_starts = 1)
+  )
+  expect_true(fit$spec$control$conserve_applied)
+  # SAS prints -182.659; the partial-score fit stopped at -184.462.
+  expect_equal(fit$fit$objective, -182.659, tolerance = 1e-5)
+  expect_lte(fit$fit$rel_gradient, .Machine$double.eps^(1 / 3))
+})
+
+test_that("a shared phase cache is never read for a different model (#631)", {
+  # The CoE gradient passes one cache to its two score evaluations. The key
+  # must hold the model too: two designs at the same theta and times share
+  # nothing, and the second must get its own gradient, not the first's.
+  data("avc", package = "TemporalHazard", envir = environment())
+  d <- stats::na.omit(avc)
+  ph <- .hzr_validate_phases(list(
+    early = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1),
+    constant = hzr_phase("constant")))
+  counts <- c(early = 1L, constant = 0L)
+  theta <- c(log(0.35), log(0.19), 1.44, 1, 0.01, log(0.03))
+  xa <- list(early = matrix(d$age, dimnames = list(NULL, "age")), constant = NULL)
+  xb <- list(early = matrix(d$opmos, dimnames = list(NULL, "age")), constant = NULL)
+  grad <- function(x_list, cache = NULL) {
+    .hzr_gradient_multiphase(theta, time = d$int_dead, status = d$dead,
+                             phases = ph, covariate_counts = counts,
+                             x_list = x_list, phase_cache = cache)
+  }
+  ga <- grad(xa)
+  gb <- grad(xb)
+  # The known positive: the two designs give different gradients.
+  expect_false(isTRUE(all.equal(ga, gb)))
+  cache <- new.env(parent = emptyenv())
+  expect_identical(grad(xa, cache), ga)
+  expect_identical(grad(xb, cache), gb)
+  # And a call that does match the key reuses the entry, to the bit.
+  expect_identical(grad(xb, cache), gb)
+})
+
+test_that("the phase cache skips the per-phase work on a hit, and only then (#631)", {
+  # The test above cannot tell a hit from a recompute: both return the same
+  # gradient, so it passes with caching switched off. This one counts the
+  # per-phase loop's calls to .hzr_phase_derivatives() instead, so it pins the
+  # speed-up itself, and it varies each key input in turn, so dropping theta,
+  # time or the entry times from the key fails here.
+  data("avc", package = "TemporalHazard", envir = environment())
+  d <- stats::na.omit(avc)
+  ph <- .hzr_validate_phases(list(
+    early = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1),
+    constant = hzr_phase("constant")))
+  counts <- c(early = 1L, constant = 0L)
+  theta <- c(log(0.35), log(0.19), 1.44, 1, 0.01, log(0.03))
+  base <- list(theta = theta, time = d$int_dead, status = d$dead,
+               time_lower = d$int_dead / 2, phases = ph,
+               covariate_counts = counts,
+               x_list = list(early = matrix(d$age, dimnames = list(NULL, "age")),
+                             constant = NULL))
+  n_calls <- 0L
+  real <- .hzr_phase_derivatives
+  local_mocked_bindings(.hzr_phase_derivatives = function(...) {
+    n_calls <<- n_calls + 1L
+    real(...)
+  })
+  work <- function(cache, ...) {
+    n_calls <<- 0L
+    do.call(.hzr_gradient_multiphase,
+            c(utils::modifyList(base, list(...)), list(phase_cache = cache)))
+    n_calls
+  }
+  cache <- new.env(parent = emptyenv())
+  # The known positive: a fresh cache does the work, at the exit and the
+  # entry times both.
+  expect_identical(work(cache), 2L)
+  # The CoE pattern: the same key with every status 0 is a hit.
+  expect_identical(work(cache, status = 0 * d$dead), 0L)
+  # Each key input changed alone is a miss, and then a hit once stored. The
+  # cache goes back to the base key first, so exactly one input differs from
+  # what is stored: changing two at once let a dropped key slip past, because
+  # the other difference forced the miss.
+  changes <- list(theta = list(theta = theta + c(0, 0, 0.01, 0, 0, 0)),
+                  time = list(time = d$int_dead * 1.01),
+                  entry = list(time_lower = d$int_dead / 3))
+  for (nm in names(changes)) {
+    work(cache)
+    expect_identical(do.call(work, c(list(cache), changes[[nm]])), 2L,
+                     info = paste(nm, "changed: a miss"))
+    expect_identical(do.call(work, c(list(cache), changes[[nm]])), 0L,
+                     info = paste(nm, "repeated: a hit"))
+  }
+  # No cache: every call does the work.
+  expect_identical(work(NULL), 2L)
+  expect_identical(work(NULL), 2L)
+})
+
+test_that("a CoE fit's second gradient evaluation reuses the first's cache (#631)", {
+  # The test above drives .hzr_gradient_multiphase() directly, so it cannot
+  # see whether the CoE wrapper in .hzr_optim_multiphase() shares one cache
+  # between its two evaluations; handing the second a fresh cache would lose
+  # the speed-up and pass it. This runs a real CoE fit and records each
+  # gradient call: the status-0 call the wrapper makes must get the same
+  # cache as the call before it, and do no per-phase work.
+  data("avc", package = "TemporalHazard", envir = environment())
+  a <- stats::na.omit(avc)
+  n_calls <- 0L
+  calls <- list()
+  real_pd <- .hzr_phase_derivatives
+  real_grad <- .hzr_gradient_multiphase
+  local_mocked_bindings(
+    .hzr_phase_derivatives = function(...) {
+      n_calls <<- n_calls + 1L
+      real_pd(...)
+    },
+    .hzr_gradient_multiphase = function(theta, time, status, ...,
+                                        phase_cache = NULL) {
+      before <- n_calls
+      g <- real_grad(theta, time, status, ..., phase_cache = phase_cache)
+      calls[[length(calls) + 1L]] <<- list(
+        all_zero = all(status == 0), cache = phase_cache,
+        work = n_calls - before)
+      g
+    }
+  )
+  fit <- hazard(
+    survival::Surv(int_dead, dead) ~ 1, data = a, dist = "multiphase",
+    phases = list(
+      early = hzr_phase("cdf", t_half = 0.1512095, nu = 1.438652, m = 1,
+                        fixed = c("t_half", "nu", "m")),
+      constant = hzr_phase("constant")
+    ),
+    fit = TRUE, control = list(n_starts = 1)
+  )
+  expect_true(fit$spec$control$conserve_applied)
+  zero <- which(vapply(calls, `[[`, logical(1), "all_zero"))
+  # The known positive: the wrapper made status-0 calls, and they follow a
+  # call that did the work.
+  expect_gt(length(zero), 0L)
+  expect_false(1L %in% zero)
+  # Whole vectors, not one expectation per call: how many calls a fit makes
+  # depends on the optimizer's path, and the suite's count should not.
+  work <- vapply(calls[zero], `[[`, integer(1), "work")
+  shared <- vapply(zero, function(k) {
+    is.environment(calls[[k]]$cache) &&
+      identical(calls[[k]]$cache, calls[[k - 1L]]$cache)
+  }, logical(1))
+  expect_identical(work, rep(0L, length(zero)))
+  expect_identical(shared, rep(TRUE, length(zero)))
+})

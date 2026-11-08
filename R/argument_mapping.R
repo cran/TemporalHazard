@@ -72,7 +72,7 @@ hzr_argument_mapping <- function(include_planned = TRUE) {
     "time", "status", "theta", "dist",
     # Multiphase
     "phases (list of hzr_phase())", "mu (via exp(log_mu) in theta)",
-    "hzr_phase(t_half=)", "hzr_phase(nu=)", "hzr_phase(m=)", "(absorbed by decompos)",
+    "hzr_phase(t_half=)", "hzr_phase(nu=)", "hzr_phase(m=)", "(not implemented)",
     "hzr_phase('constant')",
     "hzr_phase('g3', tau=)", "hzr_phase('g3', gamma=)", "hzr_phase('g3', alpha=)", "hzr_phase('g3', eta=)"
   ),
@@ -105,7 +105,7 @@ hzr_argument_mapping <- function(include_planned = TRUE) {
     "maps directly to hzr_phase(t_half=) starting value",
     "maps directly to hzr_phase(nu=) starting value",
     "maps directly to hzr_phase(m=) starting value",
-    "time transform B(t) = (exp(delta*t)-1)/delta absorbed into decompos shape",
+    "time transform B(t) = (exp(delta*t)-1)/delta; drops out at DELTA = 0, non-zero DELTA not implemented",
     "hzr_phase('constant') with no shape parameters",
     "maps directly to hzr_phase('g3', tau=) for late phase",
     "maps directly to hzr_phase('g3', gamma=) for late phase",
@@ -117,7 +117,7 @@ hzr_argument_mapping <- function(include_planned = TRUE) {
     "implemented", "implemented", "implemented", "implemented", "planned", "implemented",
     # Multiphase
     "implemented", "implemented",
-    "implemented", "implemented", "implemented", "implemented",
+    "implemented", "implemented", "implemented", "planned",
     "implemented",
     "implemented", "implemented", "implemented", "implemented"
   ),
@@ -139,7 +139,11 @@ hzr_argument_mapping <- function(include_planned = TRUE) {
     "Half-life: time at which G(t_half) = 0.5. Same concept as SAS RHO/THALF.",
     "Time exponent controlling rate dynamics. Same parameter name as SAS early NU.",
     "Shape exponent controlling distributional form. Same parameter name as SAS early M.",
-    "The C DELTA controlled B(t) = (exp(delta*t)-1)/delta. This transform is absorbed by decompos().",
+    paste("NOT IMPLEMENTED, not absorbed. The C DELTA controls",
+          "B(t) = (exp(delta*t)-1)/delta, which enters rho, the time argument",
+          "and the density Jacobian separately; R computes the delta=0 branch",
+          "of each. A job with DELTA != 0 is refused or flagged, never fitted",
+          "silently."),
     "Flat background rate. No shape parameters estimated. SAS G2 equivalent.",
     "Late-phase G3 scale parameter. Maps directly to hzr_phase('g3', tau=).",
     "Late-phase G3 time exponent. Maps directly to hzr_phase('g3', gamma=).",

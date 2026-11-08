@@ -1,3 +1,7 @@
+# Too slow for the CRAN check time budget; runs on CI and locally.
+# See "Where the check's time actually goes" in AGENTS.md.
+skip_on_cran()
+
 # test-multiphase-likelihood.R — Tests for multiphase likelihood engine
 #
 # Tests theta splitting, cumhaz/hazard computation, log-likelihood
@@ -170,6 +174,61 @@ test_that("per_phase = TRUE returns decomposed contributions", {
   expect_true("early" %in% names(result))
   expect_true("late" %in% names(result))
   expect_equal(result$total, result$early + result$late, tolerance = 1e-12)
+})
+
+
+test_that("per_phase = TRUE keeps its shape at an infeasible decomposition", {
+  # m < 0 together with nu < 0 is not a usable decomposition, so the cumhaz
+  # short-circuits to Inf and lets the caller penalise the step.  It has to
+  # short-circuit in the shape the caller asked for: the CoE wrapper reads
+  # decomp$total on every objective evaluation, and a bare vector there throws
+  # out of optim() and takes the whole optimization start with it.
+  phases <- .hzr_validate_phases(list(
+    early = hzr_phase("cdf"),
+    const = hzr_phase("constant")
+  ))
+  cov_counts <- c(early = 0L, const = 0L)
+  x_list <- list(early = NULL, const = NULL)
+
+  theta <- c(log(0.5), log(2), -0.5, -0.5,   # early: nu < 0 and m < 0
+             log(0.3))                        # const
+  time <- c(1, 3, 7)
+
+  result <- .hzr_multiphase_cumhaz(time, theta, phases, cov_counts, x_list,
+                                     per_phase = TRUE)
+  expect_true(is.list(result))
+  expect_named(result, c("early", "const", "total"))
+  expect_equal(result$total, rep(Inf, length(time)))
+  expect_equal(result$early, rep(Inf, length(time)))
+
+  # per_phase = FALSE is unchanged: the bare vector it always returned.
+  expect_equal(
+    .hzr_multiphase_cumhaz(time, theta, phases, cov_counts, x_list),
+    rep(Inf, length(time))
+  )
+})
+
+
+test_that("the CoE adjustment declines at an infeasible decomposition", {
+  # .hzr_conserve_events() runs inside the objective on every evaluation, so it
+  # meets whatever theta BFGS proposes -- including shapes the cumhaz refuses.
+  # It must decline (return theta untouched) rather than error.
+  phases <- .hzr_validate_phases(list(
+    early = hzr_phase("cdf"),
+    const = hzr_phase("constant")
+  ))
+  cov_counts <- c(early = 0L, const = 0L)
+  x_list <- list(early = NULL, const = NULL)
+
+  theta <- c(log(0.5), log(2), -0.5, -0.5, log(0.3))
+  time   <- c(1, 3, 7)
+  status <- c(1, 0, 1)
+
+  expect_identical(
+    .hzr_conserve_events(theta, "const", 5L, time, status,
+                         phases, cov_counts, x_list, total_events = 2),
+    theta
+  )
 })
 
 

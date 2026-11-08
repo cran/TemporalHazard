@@ -1,3 +1,7 @@
+# Too slow for the CRAN check time budget; runs on CI and locally.
+# See "Where the check's time actually goes" in AGENTS.md.
+skip_on_cran()
+
 # tests/testthat/test-decompos-boundary.R
 #
 # Phase 7d: boundary and limiting-case behavior of hzr_decompos().
@@ -82,6 +86,25 @@ test_that("g equals the numerical derivative of G across the used branches", {
   check_deriv(3,  0, -1)   # Case 2L
 })
 
+test_that("Case 3L keeps G nonzero, and g its derivative, far below 1e-16 (#600)", {
+  # The point a multiphase start ran away to on avc. There btnu is ~1e-18,
+  # 1 - exp(-btnu) rounded G to exactly 0, and g, formed directly, stayed
+  # ~1e-17: the cumulative hazard was 0 at every event while the hazard was
+  # not, and the optimizer climbed log mu to 130 for a log-likelihood of
+  # +6380.86.
+  t_half <- exp(288.923)
+  nu     <- -7.65665
+  t      <- c(0.0014, 0.016, 0.053, 0.33, 0.38)
+  d      <- hzr_decompos(t, t_half = t_half, nu = nu, m = 0)
+  expect_true(all(d$G > 0))
+  h     <- 1e-6 * t
+  num_g <- (hzr_decompos(t + h, t_half = t_half, nu = nu, m = 0)$G -
+              hzr_decompos(t - h, t_half = t_half, nu = nu, m = 0)$G) / (2 * h)
+  # A ratio, not expect_equal(d$g, num_g): both are ~1e-17, below any
+  # tolerance, so waldo would compare them absolutely and pass on G = 0.
+  expect_equal(d$g / num_g, rep(1, length(t)), tolerance = 1e-5)
+})
+
 test_that("G is a valid CDF (monotone, within [0, 1]) for the early-phase cases", {
   t <- seq(0.01, 30, length.out = 200)
   for (pars in list(c(nu = 2, m = 1), c(nu = 2, m = 0), c(nu = 2, m = -1))) {
@@ -141,4 +164,63 @@ test_that("Case 3 (m>0, nu<0) matches the C HAZARD g1flag=5 G1 evaluator", {
       label = paste("Case 3 vs C g1flag=5 for nu =", nu, "m =", m)
     )
   }
+})
+
+# G3 below the underflow of (t/tau)^gamma -----------------------------------
+# With gamma large, (t/tau)^gamma underflows for t well below tau. The
+# log-scale form used to clamp that to double.xmin, which froze G3 and put
+# g3 wrong by more than 100 on the log scale, with no warning. Below the
+# underflow the exact log forms reduce to linear functions of ln(t/tau), so
+# compare against those.
+test_that("G3 and g3 stay accurate where (t/tau)^gamma underflows", {
+  tau <- exp(2.6238)
+  gamma <- 220.08
+  eta <- 0.0090875
+  t <- c(0.1, 0.3, 0.5, 0.55)
+  x <- gamma * log(t / tau)
+  expect_true(all(x < -700))
+
+  # alpha > 0: ln G3 = eta * (x - ln alpha)
+  alpha <- 1.2174
+  d <- hzr_decompos_g3(t, tau, gamma, alpha, eta)
+  ln_scale <- log(gamma) + log(eta) - log(tau) - log(alpha)
+  expect_equal(log(d$G3), eta * (x - log(alpha)), tolerance = 1e-12)
+  expect_equal(
+    log(d$g3),
+    ln_scale + (eta - 1) * (x - log(alpha)) + (gamma - 1) * log(t / tau),
+    tolerance = 1e-12
+  )
+  # G3 must still move with t below the underflow
+  expect_true(all(diff(d$G3) > 0))
+
+  # t / tau underflowing to exactly 0 (t = 0 is clamped to double.xmin).
+  # With gamma = 2, alpha = 1, eta = 0.5, G3 = t / tau exactly, so g3 is
+  # 1 / tau at every t. With alpha = 0, eta = 1, g3 = 2 t / tau^2 while
+  # (t / tau)^2 is tiny.
+  t_tiny <- c(0, .Machine$double.xmin, 1e-300, 1)
+  d_lin <- hzr_decompos_g3(t_tiny, tau = 1e20, gamma = 2, alpha = 1, eta = 0.5)
+  # Compare ratios to 1: expect_equal() goes absolute when the expected
+  # value is below the tolerance, and 0 would pass against 1e-20.
+  expect_equal(d_lin$g3 * 1e20, rep(1, 4), tolerance = 1e-12)
+  # (t / tau)^2 underflows at t = 1e-150 while g3 = 2e-190 does not
+  t_a0 <- c(1e-150, 1)
+  d_a0 <- hzr_decompos_g3(t_a0, tau = 1e20, gamma = 2, alpha = 0, eta = 1)
+  expect_equal(d_a0$g3 / (2 * t_a0 / 1e40), c(1, 1), tolerance = 1e-12)
+
+  # alpha large enough that the division underflows while (t/tau)^gamma
+  # does not
+  t_near <- 10 * exp(-1 / 220)
+  d_big <- hzr_decompos_g3(t_near, 10, 220, 1e308, 0.5)
+  expect_equal(log(d_big$G3),
+               0.5 * (log(log1p(exp(-1))) - log(1e308)),
+               tolerance = 1e-12)
+
+  # alpha = 0: ln G3 = eta * x
+  d0 <- hzr_decompos_g3(t, tau, gamma, 0, eta)
+  expect_equal(log(d0$G3), eta * x, tolerance = 1e-12)
+  expect_equal(
+    log(d0$g3),
+    log(gamma) + log(eta) - log(tau) + (eta - 1) * x + (gamma - 1) * log(t / tau),
+    tolerance = 1e-12
+  )
 })

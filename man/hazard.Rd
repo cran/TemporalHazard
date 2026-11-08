@@ -19,34 +19,154 @@ hazard(
   fit = FALSE,
   weights = NULL,
   control = list(),
+  objective = c("likelihood", "sas"),
   ...
 )
 }
 \arguments{
-\item{formula}{Optional formula of the form \code{Surv(time, status) ~ predictors}.
+\item{formula}{Optional formula with a \code{Surv()} object on the left.
+Right-censored (\code{Surv(time, status)}), left-censored
+(\code{Surv(time, event, type = "left")}), interval-censored
+(\code{type = "interval"} or \code{"interval2"}) and counting-process
+(\code{Surv(start, stop, event)}) forms are all accepted. \code{Surv()} codes
+censoring status with different integers than this package does; the
+formula path translates them, so write \code{Surv()}'s codes here. A plain
+\code{status} vector takes this package's codes; a \code{Surv} passed as \code{status}
+is translated the same way as here. Every distribution carries its own
+intercept: its baseline parameter, the one the covariates add to,
+already plays that role, so the design never has one: removing
+it (\code{~ 0 + age}, \code{~ age - 1}) is ignored with a warning, and builds the
+design of \code{~ age}.
+A \code{.} on the right-hand side stands for every column of \code{data} that the
+\code{Surv()} term does not use, as in \code{survival::coxph()}.
 When provided, overrides direct time/status/x arguments and extracts from data.
 Example: \code{hazard(Surv(time, status) ~ x1 + x2, data = df, dist = "weibull", fit = TRUE)}.}
 
-\item{data}{Optional data frame containing variables referenced in formula.}
+\item{data}{Optional data frame. On the formula path it supplies the model
+frame, and \code{weights} is evaluated in its scope. On the vector path
+\code{time}, \code{status}, \code{time_lower}, \code{time_upper} and \code{weights} are evaluated
+in its scope, the way \code{\link[base:subset]{base::subset()}} and \code{\link[base:transform]{base::transform()}} do: a bare column name resolves to that column, and
+anything that is not a column (\code{df$col}, a local vector, a literal)
+falls through to the calling environment. A column of the same name as
+a caller variable wins, and because that silently discards the caller's
+vector (the way a wrapper forwarding its own argument by name does),
+such a name raises a warning naming the symbol and the argument.
+The warning reads the names written in the expression. When the
+argument is the name alone, it says the column was used. When the name
+is part of a larger expression, it does not say which value was read:
+the expression may never evaluate the name (an unused function
+argument), may rebind it first (a loop variable, an assignment) or may
+evaluate it somewhere else (\code{with()}), and the warning cannot tell. A name chosen at run time, as in \code{get(nm)} or
+\code{eval(as.name(nm))}, resolves the same way, column first, as it does in
+\code{\link[stats:lm]{stats::lm()}}, but is not checked; the vector path has behaved so since
+1.2.2. No second evaluation is made to compare the two values, because
+evaluating an expression such as \code{runif(n)} twice gives two different
+vectors.
+Masked arguments are validated like any other, so an \code{NA} in a
+masked column errors: an \code{NA} count on the SAS \code{ICENSOR}
+path reaches \code{weights} and stops with \verb{'weights' must be non-negative and finite}.
+A named element of \code{data} that is a \strong{function} is refused, on both
+paths, as \code{\link[stats:lm]{stats::lm()}} refuses it. Because the mask sits in front of
+the calling frame, such an element would be called in place of the
+function an expression names -- \code{weights = rep(1, n)} calling a \code{rep}
+held in \code{data} -- and the fit would change with nothing to show for it.
+An S4 generic and a reference-class generator are functions for this
+purpose. A list-column of functions is a list, not a function, and is
+unaffected, as is an element with no name, which no expression can look
+up -- but an \code{NA_character_} name is refused, because R binds such an
+element under the symbol \code{`NA`} and a call reaches it. Remove the
+element: for a vector argument or \code{weights}, define the helper in the
+calling environment; for one used inside the \code{Surv()} response, compute
+the value into a \code{data} column first, since the response is evaluated
+without the formula's environment.}
 
-\item{time}{Numeric follow-up time vector.}
+\item{time}{Numeric follow-up time vector. A row whose time is 0 is
+dropped before fitting, whatever its status, as PROC HAZARD drops it
+(\code{TIME <= 0} is inadmissible there). The time tested is the row's upper
+bound: \code{time} for an exact or right-censored row, \code{time_upper} for a
+left- or interval-censored one; a lower bound or entry time of 0 is
+admissible. \code{hazard()} warns with the count (class
+\code{"hzr_time_zero_dropped"}), and every row stored on the fit is what
+remains. \code{fit$data$dropped_time_zero} is the count and
+\code{fit$data$dropped_time_zero_rows} their positions among the rows given.
+On the formula interface the response and design are then built on the
+retained rows, as if the dropped ones had not been given, so a
+data-dependent term such as \code{scale(age)} uses the retained rows. Two
+inputs are refused because they cannot follow the rows: a response
+whose values change once the rows are dropped, such as
+\code{Surv(time - min(time), status)}, and a formula that reads a per-row
+value from outside \code{data}. The second is read two ways. A variable
+named in the formula is refused when it is not a column of \code{data}. A
+helper that reads an outside vector inside its body, such as
+\code{function(a) a + g[seq_along(a)]}, names no such variable, and on the
+retained rows would pair them with the first elements of \code{g}. So the
+formula's variables are evaluated on every row in order, and again with
+the retained rows first, in their order, as the fit sees them; a
+variable that then gives a retained row a different value is refused
+(#590). Both times every row is present, so \code{scale()}, \code{poly()},
+\code{ns()} and factors pass, including a factor whose levels are taken in
+order of appearance. A term that cannot be evaluated on the dropped
+rows, such as \code{poly()} over an NA only they carry, is evaluated with
+those rows replaced by a copy of a retained one. A term that depends on
+the order of the rows, such as \code{cumsum(age)}, or is random, such as
+\code{jitter(age)}, is refused unless the dropped rows are the last ones. A
+helper that depends on how many rows it is given, such as
+\code{tail(g, length(a))} or \code{a * mean(g[seq_along(a)])}, is not caught,
+because both evaluations see every row. Put such a vector in \code{data}, where it is
+dropped with its rows.
+A caller-supplied row-aligned input whose row count differs from
+\code{time}'s is refused before any row is dropped: \code{x} and \code{weights} on the
+\verb{time =}/\verb{status =} interface, and \code{data} wherever a formula reads it row
+by row. (On the formula interface the design is not the caller's; it is
+rebuilt from the retained rows of \code{data}.)}
 
-\item{status}{Numeric or logical event indicator vector.}
+\item{status}{Numeric or logical event indicator vector, or a
+\code{\link[survival:Surv]{survival::Surv()}} object. A \code{Surv} is read by its \code{type}, exactly as the
+formula interface reads it, and a \code{time}, \code{time_lower} or \code{time_upper}
+that disagrees with it is an error.}
 
-\item{time_lower}{Optional numeric lower bound vector for censoring intervals.
-Used when \code{status == 2} (interval-censored); defaults to \code{time} if NULL.}
+\item{time_lower}{Optional numeric vector whose role depends on \code{status}.
+Supplying it explicitly is \strong{not} a no-op.
+\itemize{
+\item \code{status == 2} (interval-censored): the lower bound of the censoring
+interval, defaulting to \code{time}. Every \code{dist} reads it this way.
+\item \code{status \%in\% c(0, 1)} (right-censored or event): the counting-process
+\strong{entry time} when \verb{0 < time_lower < time}, so the row contributes
+\code{H(time) - H(time_lower)}. Every \code{dist} reads it this way. A value of
+\code{0}, or equal to \code{time}, means no entry time, and left \code{NULL} the
+entry time is \strong{\code{0}}.
+\item \code{status == -1} (left-censored): not used; the bound is \code{time_upper}.
+}
+
+\code{time_lower = time} on the status 0 and 1 rows is the mixed-interval
+layout: exact and right-censored rows carry their own time, and only
+the status-2 rows carry a real lower bound. A subject cannot enter the
+risk set after the moment it leaves, so \code{hazard()} stops with an error
+when a status 0 or 1 row has \code{time_lower > time}, as SAS HAZARD rejects
+a start time after the exit time. It also stops when rows with
+\verb{time_lower == time > 0} sit beside rows with genuine entry times: in
+counting-process data those are zero-length epochs, which
+\code{\link[=hzr_repeated_events]{hzr_repeated_events()}} can emit and which must be adjusted first.}
 
 \item{time_upper}{Optional numeric upper bound vector for censoring intervals.
 Used when \code{status \%in\% c(-1, 2)}; defaults to \code{time} if NULL.}
 
-\item{x}{Optional design matrix (or data frame coercible to matrix).}
+\item{x}{Optional design matrix (or data frame coercible to matrix).
+Unlike \code{time} and the other vector arguments, \code{x} is \strong{not}
+data-masked: \code{hazard(data = df, time = tt, x = age)} errors with
+\verb{object 'age' not found} where \code{time = tt} resolves, so write
+\code{x = df[["age"]]} or use the formula interface.}
 
 \item{time_windows}{Optional numeric vector of strictly positive cut points for
 piecewise time-varying coefficients. When provided, each predictor column in
 \code{x} is expanded into one column per time window so each window gets its own
 coefficient.}
 
-\item{theta}{Optional numeric coefficient vector (starting values for optimization).}
+\item{theta}{Numeric starting values for optimization: the shape
+parameters, then one coefficient per column of the design matrix.
+Required when \code{fit = TRUE} with a single-distribution \code{dist}; optional for
+\code{dist = "multiphase"}, which assembles its own starting values from
+\code{phases} when \code{theta} is \code{NULL}.}
 
 \item{dist}{Character baseline distribution label (default \code{"weibull"}).
 One of \code{"weibull"}, \code{"exponential"}, \code{"loglogistic"}, \code{"lognormal"}, or
@@ -56,16 +176,42 @@ and requires \code{phases}.  See the \strong{Baseline distributions} section for
 each means and when to use it.}
 
 \item{phases}{Optional named list of \code{\link[=hzr_phase]{hzr_phase()}} objects specifying the
-phases for a multiphase model (\code{dist = "multiphase"}).  See Examples.}
+phases for a multiphase model (\code{dist = "multiphase"}).  Names must be
+unique, and \code{"total"} and \code{"time"} are reserved: they label the summed
+column and the column of prediction times in the decomposed output of
+\code{\link[=predict.hazard]{predict.hazard()}}, so a phase of either name is rejected.  See Examples.}
 
 \item{fit}{Logical; if TRUE, fit the model via maximum likelihood (default FALSE).}
 
 \item{weights}{Optional numeric vector of observation weights (non-negative).
 Each observation's log-likelihood contribution is multiplied by its weight.
 Use for severity-weighted repeated events. Default \code{NULL} (unit weights).
-Implements the SAS \code{WEIGHT} statement.}
+Implements the SAS \code{WEIGHT} statement. With \code{data}, a name is looked up
+among its columns first and then in the calling environment, on both
+interfaces. \code{\link[stats:lm]{stats::lm()}} also looks in \code{data} first, but then in the
+formula's environment rather than the caller's, so a formula built
+inside another function does not bring that function's variables with
+it here. See \code{data} for the warning raised when a name is both.
+\code{weights} is evaluated over every row given, so an expression that
+depends on the rows -- \code{weights = w / mean(w)} -- includes any row later
+dropped for time 0 (see \code{time}); compute it in \code{data} on the rows you
+intend to fit if that matters.}
 
 \item{control}{Named list of control options (see Details).}
+
+\item{objective}{Which interval-censored contribution the multiphase
+likelihood accumulates. \code{"likelihood"} (default) uses the interval
+probability \eqn{\log(S(l) - S(u))}. \code{"sas"} reproduces what
+\verb{PROC HAZARD} accumulates: the event-density term with the instantaneous
+hazard replaced by the interval-mean hazard over \eqn{(l, u]}. Applies
+only to \code{dist = "multiphase"}; exact-event and right-censored rows are
+unaffected either way.
+
+\code{"sas"} requires data it can represent: no left-censored rows (\verb{PROC HAZARD} has no left-censoring statement) and a positive width on every
+interval-censored row (the interval-mean hazard divides by \eqn{u - l}).
+Both are properties of the data rather than of the fit, so they are
+checked when the argument is supplied, including under \code{fit = FALSE},
+which therefore stops rather than returning an unusable object.}
 
 \item{...}{Additional named arguments retained for parity with legacy calling
 conventions.}
@@ -77,10 +223,101 @@ An object of class \code{hazard}, a named list with components:
 \code{time_windows}, \code{phases}),
 \code{data} (input data: \code{time}, \code{status}, \code{x},
 \code{weights}, etc.),
-\code{fit} (optimisation results: \code{theta}, \code{objective},
-\code{converged}, \code{se}, \code{vcov}, \code{counts}, \code{message};
-all \code{NULL} when \code{fit = FALSE}),
-and \code{engine} (implementation tag, \code{"native-r-m2"}).
+\code{fit} (optimisation results: \code{theta}, \code{objective}, the
+maximized log-likelihood, so larger is better, or PROC HAZARD's objective
+under \code{objective = "sas"} (\code{summary()} reports which, as its
+\code{objective}); \code{converged}, \code{se}, \code{vcov}, \code{counts}, \code{message},
+and \code{rel_gradient}, \code{rel_gradient_reason} and
+\code{polish_code}, the SAS/C acceptance
+test described under "Convergence";
+all \code{NULL} when \code{fit = FALSE}; multiphase fits add
+\code{starts}, one row per optimisation start with its \code{status}
+(\code{"ok"}, \code{"nonconverged"}, \code{"infeasible"},
+\code{"nonfinite"} or \code{"error"}), \code{objective} (on the same
+scale as the fit's, so the best start has the largest; \code{NA}
+unless the start reached a point where the likelihood is defined, and
+recorded as the optimizer returned it, before any Conservation of Events
+adjustment to the conserved phase's scale), \code{convergence} (the
+\code{\link[stats]{optim}} code, \code{0} for success), whether it was
+the \code{best} and so the reported fit, and the \code{message} of any
+error. A start that stops at \code{maxit} has a finite \code{objective}
+and can win the selection, so \code{status} distinguishes it from one
+that converged. Every fit carries \code{weak}, which takes one of three
+values: a list, when the likelihood is near-flat along a parameter
+combination, giving the \code{params} spanning that direction, their
+squared loadings (\code{weights}), the strongest pairwise
+\code{correlation} among them, the Hessian \code{rcond} and
+\code{n_directions}, the number of near-flat directions found (when a
+single parameter carries the direction on its own, the list has one
+\code{params} entry, \code{single = TRUE}, its \code{estimate}, and
+\code{correlation = NA}, and \code{se_metric}, its standard error on
+the log scale; only a g3 shape, \code{gamma}, \code{alpha} or
+\code{eta}, or a multiphase phase's \code{log_mu}, \code{log_t_half}
+or \code{log_tau}, is named this way, the last three when their
+standard error exceeds 10 log units, and with \code{weights = NA});
+\code{NULL} when the fit was examined and is well identified; and
+\code{NA} when the check could not run because no usable Hessian was
+available, which includes an unfitted object, an install without
+the suggested \pkg{numDeriv}, a Hessian that is not positive-definite
+(unless a ridge was found, which is reported), and an ill-conditioned fit in which an
+estimated parameter has no finite variance and no ridge was found among
+the others, since that parameter was not examined. Test with \code{is.list(fit$fit$weak)},
+not \code{!is.null()}: the \code{NA} case has not been examined and
+must not be read as a clean result),
+\code{engine} (implementation tag, \code{"native-r-m2"}), and two
+fields recording what the fit did not do: \code{degraded}, a character
+vector of the steps not performed, in the fixed order
+\code{"fitting"}, \code{"standard_errors"},
+\code{"conserved_phase_variance"}, \code{"weak_direction_check"},
+\code{"boundary_check"}, \code{"conservation_of_events"}, and empty
+when nothing was lost; and
+\code{degraded_causes}, a character vector with the same names giving
+the reason for each. \code{print()} and \code{summary()} always show
+them as a "Not done in this run" block, which reads "none" when nothing
+was lost. \code{fit$fit$weak} is \code{NA} exactly when
+\code{"weak_direction_check"} is listed.
+
+\code{fit$fit$boundary} is its sibling and takes the same three states,
+for phases whose fit sits where their parameterisation breaks down:
+\code{NULL} when the check ran and found nothing, a list of records when
+it found something, and \code{NA} when it did not run --- and it is
+\code{NA} exactly when \code{"boundary_check"} is listed in
+\code{degraded}, with the reason in \code{degraded_causes}. Each record
+carries \code{mechanism}, \code{phase}, \code{parameter} and a
+printable \code{detail}. The mechanisms are \code{"unbounded_phase"}, a
+\code{"hazard"} phase whose \code{t_half} is below the first observed
+time; \code{"phase_discontinuity"}, a \code{"cdf"} or \code{"hazard"}
+phase whose shape has collapsed to a step the observed times cannot
+resolve (it can lie inside the data); and two made at setup, before the
+fit: \code{"g3_alpha_one"} (a g3 phase with \code{alpha} fixed at 1,
+re-expressed as PROC HAZARD does, see \code{\link[=hzr_phase]{hzr_phase()}}) and
+\code{"g3_fixge2_alpha_start"} (a free \code{alpha} start moved to 2/3
+under \code{constraint = "eta_gamma"}); and two made after it.
+\code{"g3_corner_supremum"} is a g3 phase under
+\code{constraint = "eta_gamma"} whose estimated \code{gamma} converged
+below 1000 although the log-likelihood is higher at a much larger
+\code{gamma}, with any fixed \code{tau} or \code{alpha} held. The
+estimate is then not the maximum-likelihood one, and the supremum may lie
+at \code{gamma = Inf}. A fixed \code{gamma}, and a fit
+with left- or interval-censored rows, are not examined.
+\code{"coe_no_events_left"} is a fit under Conservation of Events whose
+log-likelihood is higher with the conserved phase's scale sent to zero,
+where no events remain for that phase. Both records also carry
+\code{gain} and the higher point as \code{certificate_theta} with its
+\code{certificate_loglik} (the corner record adds \code{gamma_hat}); the
+estimates are not changed. \code{"coe_phase_vanished"} is a fit under
+Conservation of Events that has itself run to that boundary, or beside
+it: the conserved phase's largest share of the cumulative hazard is
+below \code{control$phase_share_tol}. Its record carries \code{share}
+and \code{tol}, and \code{warned_by = "phase_share"}: the
+identifiability warning has already reported the phase, so this record
+raises no warning of its own. A fit can carry several records, in no
+guaranteed order, so select them by \code{mechanism}. Only rows the
+likelihood reads
+count as observed times. A fit with any record that has no
+\code{warned_by} raises one warning whose classes are \code{"hzr_"}
+plus each such record's mechanism, all inheriting
+\code{"hzr_boundary"}, so one handler catches the whole family.
 }
 \description{
 Creates a \code{hazard} object and optionally fits it via maximum likelihood.
@@ -91,17 +328,131 @@ optimize to produce fitted estimates.
 \details{
 Control parameters:
 \itemize{
-\item \code{maxit}: Maximum iterations (default 1000)
+\item \code{maxit}: Maximum iterations of the quasi-Newton (BFGS) optimizer
+(default 1000), applied to each start. A fit whose optimizer reports
+convergence but fails SAS's gradient test is continued with
+\code{\link[stats:nlm]{stats::nlm()}} under the same limit (see "Convergence"), so raising
+\code{maxit} lets that continuation run further too. The Nelder-Mead warm-up
+that a multiphase fit with fixed parameters may run first has its own
+limit, which \code{maxit} does not change. It must be a single finite number
+of at least 1 (a fraction is truncated, as PROC HAZARD truncates \code{MAXITER}):
+anything else stops \code{hazard()} at once, fitted or not (#541). A fit
+with no iterations is its starting values, not an estimate; to
+evaluate a model at parameters you supply, use \code{\link[=hzr_evaluate]{hzr_evaluate()}}.
 \item \code{n_starts}: Number of optimization starts for multiphase fits (default 5).
-Each start after the first adds random noise to the initial values, drawn
-from the ambient RNG stream; call \code{set.seed()} before fitting for
-reproducible results.
-\item \code{reltol}: Relative parameter change tolerance (default 1e-5)
-\item \code{abstol}: Absolute gradient norm tolerance (default 1e-6)
-\item \code{method}: Optimization method: "bfgs" or "nm" (default "bfgs")
-\item \code{condition}: Condition number control (default 14)
-\item \code{nocov}, \code{nocor}: Suppress covariance/correlation output (legacy; no-op in M2)
+Each start after the first offsets the initial values. The offsets are
+computed by the package without using R's random number stream, so a
+multiphase fit is reproducible without \code{set.seed()} and neither reads nor
+changes that stream.
+\item \code{start_seed}: Seed selecting the ensemble of multi-start offsets
+(default 3). Any whole number within integer range, negative included.
+Fits are reproducible at any value; vary it to probe a different set of
+starts when a fit is suspected of sitting in a local optimum, and compare
+the resulting \code{objective} values. A fractional value is rejected rather
+than truncated, since \code{3.9} and \code{3} would otherwise select the same
+ensemble without saying so.
+\item \code{phase_share_tol}: Threshold for the multiphase identifiability warning
+(default 1e-8). A phase is reported as having left the model when it
+supplies less than this share of the cumulative hazard at every observed
+time (it never started; neither its \code{mu} nor its shape is identified),
+or when its contribution varies by less than this relative amount across
+them (it finished before the first observation and acts as a constant
+offset; \code{mu} stays identified, the shape parameters do not). A third
+condition is a property of the observed times rather than of any phase:
+when their own relative range falls below this threshold and no phase's
+contribution varies across them, they separate no phase from any other
+and none of the shapes is identified. That verdict is withheld when the
+fit supplies counting-process entry times or interval bounds that add
+enough evaluation points the measure did not see. "Enough" is counted, not
+assumed: with the event times tied, each added point supplies one more
+functional of the parameters, and one more than the number of added points
+must reach the number of free parameters. A zero entry time, or a bound
+equal to an event time, adds nothing and does not count. The count is
+deliberately conservative: it does not credit the extra functional that a
+zero entry time makes separately observable, so a fit can be warned about
+while being identified. For the same reason the per-phase measures can
+overstate what an interval-censored or left-truncated fit loses, since a
+phase flat across the event times may still be identified through the
+bounds; the saturated warning says so where such points exist, rather
+than claiming the likelihood is unchanged (#228). The measured shares are
+kept on the fit as \code{fit$fit$phase_share}. Raise it to catch marginal
+phases, set it to 0 to silence the check.
+\item \code{reltol}: Relative convergence tolerance on the objective the optimizer
+minimizes, the negative log-likelihood (default 1e-5). The stored
+\code{fit$fit$objective} has the opposite sign (see Value). BFGS stops when an iteration reduces it by
+less than \verb{reltol * (|objective| + reltol)}, so the stopping gap grows
+with the size of the log-likelihood: about 0.0024 at a log-likelihood of
+-240. On a flat surface plain BFGS can stop that far short of the optimum
+and still report convergence, so \code{hazard()} then applies SAS/C HAZARD's
+relative-gradient test and, when the stop fails it, continues with
+\code{\link[stats:nlm]{stats::nlm()}}; see the "Convergence" section.
+\item \code{conserve}: Apply Conservation of Events (\strong{\code{dist = "multiphase"} only};
+default \code{TRUE}). CoE counts exact events, so it is \strong{automatically
+disabled} whenever any \code{status} falls outside \{0, 1\} (which interval
+or left censoring guarantees) and whenever the model has fewer than two
+phases. On a fitted multiphase object the outcome is recorded next to the
+request, both fields living under \code{fit$spec$control}:
+\itemize{
+\item \code{fit$spec$control$conserve_applied}: logical, whether CoE was actually
+applied;
+\item \code{fit$spec$control$conserve_disabled_reason}: one of
+\code{"not_requested"}, \code{"unsupported_censoring"}, \code{"single_phase"},
+\code{"no_events"}, \code{"setup_failed"}, or \code{NA} when CoE was applied.
 }
+
+Read \code{fit$spec$control$conserve_applied}, not
+\code{fit$spec$control$conserve}: the latter says only what you asked for.
+\item \code{shape_param_count}: The number of baseline parameters at the front of
+\code{theta}: the scale and any shape parameters, so 2 for \code{"weibull"} and 1
+for \code{"exponential"}. For a single-distribution model only. The fit does
+not use it: \code{theta} is checked against the distribution's own count, and
+so are \code{\link[=hzr_stepwise]{hzr_stepwise()}}, its refits and its score test. Only an internal
+helper that writes a SAS input deck for parity checks reads it. A
+multiphase fit derives its own layout, so nothing reads it there.
+}
+
+The elements above are accepted without a warning: \code{maxit} and \code{reltol}
+for every model, \code{shape_param_count} for a single-distribution model, and
+\code{n_starts}, \code{start_seed}, \code{phase_share_tol} and \code{conserve} for
+\code{dist = "multiphase"} (#376). Any other element draws one warning that
+names it and says why it has no effect, and the fit proceeds unchanged,
+as \code{\link[stats:optim]{stats::optim()}} does for unknown \code{control} names. The element is
+dropped before the fit, so a name such as \code{n_starts_extra} cannot be read
+as \code{n_starts}, and \code{fit$spec$control} keeps none of the ignored
+elements. That covers:
+\itemize{
+\item a name no fit reads, such as the misspelling \code{n_startz}, and an unnamed
+element;
+\item \code{abstol} (read only by a bounded optimizer no fit uses), \code{method},
+\code{condition}, \code{nocov} and \code{nocor}, which earlier versions documented as
+accepted without reading them;
+\item \code{fix} and \code{quasi}, which no fit has ever read. A fit given \code{fix} was
+never constrained, so results obtained with it may be affected; hold a
+parameter with \code{hzr_phase(fixed = )} on a multiphase phase. A
+single-distribution model has no mechanism for fixing a parameter.
+\item a multiphase element such as \code{n_starts} given to a single-distribution
+fit, and \code{shape_param_count} given to a multiphase one.
+}
+
+No name in \code{control} is an error. A bad \code{maxit} stops \code{hazard()} at once
+(see above); a bad value for another element the fit reads still stops a
+fit (\code{fit = TRUE}) where it is read. \code{\link[=hzr_stepwise]{hzr_stepwise()}} and
+\code{\link[=hzr_bootstrap]{hzr_bootstrap()}} pass \code{control} to every candidate refit, and an error
+there would count as a failed candidate, so a screen would report success
+having tested nothing.
+
+SAS \verb{PROC HAZARD} options with no \code{control} equivalent: \code{NOCOV} and \code{NOCOR}
+only suppress printed output, and \code{hazard()} prints nothing until asked.
+\verb{CONDITION=} stops SAS's optimizer on a condition-number test that
+\code{hazard()} does not have. \code{QUASI} is \code{hazard()}'s optimizer already: the
+fits it runs use BFGS (a multiphase fit may run a Nelder-Mead warm-up
+first, and a stop that fails SAS's gradient test continues with
+\code{\link[stats:nlm]{stats::nlm()}}). SAS jobs often write \verb{STEEPEST QUASI} together, steepest
+descent first; \strong{there is no steepest-descent option and no two-stage
+strategy}. The multiphase likelihood is multimodal, so a different descent
+path can land on a different optimum: a fit translated from a job using
+\code{STEEPEST} may not reproduce SAS's estimates, and \code{hzr_translate_sas()}
+records the keyword as untranslated rather than dropping it.
 
 Censoring status coding:
 \itemize{
@@ -119,6 +470,15 @@ interactions so each window has its own coefficient vector.
 engines remain unchanged.
 }
 }
+\note{
+\code{objective = "sas"} exists to reproduce legacy \verb{PROC HAZARD} runs and
+\strong{must not be used for new analyses}. It is a density, not a probability:
+it is inconsistent for wide intervals, where the two forms differ
+materially (22 log-likelihood units on the esophagectomy reference fit).
+The default is the statistically correct interval likelihood. See
+\code{inst/dev/SAS-INTERVAL-OBJECTIVE-DESIGN.md} for the derivation and the
+four-reference evidence.
+}
 \section{The fitted model}{
 
 
@@ -132,18 +492,76 @@ survival are
       S(t \mid \mathbf{x}) = \exp\!\bigl(-H(t \mid \mathbf{x})\bigr)}
 
 where \eqn{\mu_j(\mathbf{x}) = \exp(\alpha_j + \mathbf{x}_j^\top
-\boldsymbol{\beta}_j)} and the temporal shapes \eqn{\Phi_j}, \eqn{\varphi_j}
+\beta_j)} and the temporal shapes \eqn{\Phi_j}, \eqn{\varphi_j}
 are set by each phase's \code{type} (see \code{\link[=hzr_phase]{hzr_phase()}}).  The
 proportional-hazards single-phase families (\code{"weibull"}, \code{"exponential"})
 are the special case \eqn{J = 1}, with covariates acting multiplicatively on
 one temporal shape.  The \code{"loglogistic"} (proportional-odds) and
 \code{"lognormal"} (accelerated-failure-time) families place covariates
-differently --- on the odds of failure and the log-time location,
-respectively --- so they are separate parameterizations, not special cases
+differently (on the odds of failure and the log-time location,
+respectively), so they are separate parameterizations, not special cases
 of this additive form.  Parameters are estimated
 on an unconstrained internal scale (e.g. \eqn{\log\mu}, \eqn{\log t_{1/2}})
 and transformed back for reporting; see
 \code{vignette("mf-mathematical-foundations")}.
+}
+
+\section{Convergence}{
+
+
+The optimizer stops when an iteration improves the log-likelihood by less
+than \code{control$reltol} relative to its size, and on a flat ridge that can
+happen well short of the maximum. SAS/C HAZARD accepts an optimum only on a
+different test, the relative gradient
+\eqn{\max_i |g_i| \max(|x_i|, 1) / \max(|\ell|, 1) \le \epsilon^{1/3}}{max_i
+|g_i| max(|x_i|, 1) / max(|l|, 1) <= eps^(1/3)}, about 6e-6, and \code{hazard()}
+applies it too: when the optimizer reports convergence and the test fails,
+the fit is continued with \code{\link[stats:nlm]{stats::nlm()}} at SAS's tolerances, and the
+continued point is kept if it improves the log-likelihood.
+
+Every fit records the result in \code{fit$fit$rel_gradient} and, when the
+continuation improved the fit, its termination code in
+\code{fit$fit$polish_code}. \code{print()} and \code{summary()} show both.
+\code{rel_gradient} is \code{NA} when the test was not applied (the optimizer did
+not report convergence) or the gradient cannot be evaluated at the
+estimates; \code{NA} is never reported as a pass. Neither is it always a
+failure: some routes to it, such as a non-converged stop, do say the
+estimates are unreliable, while others, such as a finite-difference score
+that needed a point where the log-likelihood is not usable, say nothing
+against them. Which route it took is recorded in
+\code{fit$fit$rel_gradient_reason}, \code{NA_character_} when the test did run, and
+\code{print()} and \code{summary()} show it. Under Conservation of Events the
+conserved scale is re-solved from the other parameters at every step, as
+SAS/C does, and the score used by the optimizer, the continuation and the
+test includes how that scale moves with them. A fit can still end with
+the test not met, under Conservation of Events or without it. A warning is raised only for code 4, the
+iteration limit (raise \code{control$maxit}), and code 5, where the
+log-likelihood kept rising along some direction and the model may have no
+maximum. Codes 2 and 3, where SAS/C prints a caution, are recorded without
+one, except for the single-distribution fits: there a converged fit with
+a relative gradient above 1e-3 that did not stop on code 4 or 5 (in
+practice code 2 or 3, or no code, which is recorded only when the continuation's point
+was kept: none is when it found no better point, \code{\link[stats:nlm]{stats::nlm()}} raised
+an error, or its minimum was not finite) warns,
+with class \code{"hzr_possible_false_maximum"}, that the fit may not be a
+maximum, and suggests other starting values or centring or rescaling the
+covariates. Badly scaled covariates can put a good fit above 1e-3, where
+a restart does not help and rescaling does. \code{\link[=hzr_bootstrap]{hzr_bootstrap()}} counts
+the replicates in which any fit (the base refit, a stepwise refit or the
+final fit) meets the same rule, and warns once. Such a stop can be a false
+maximum far below the best one from an ordinary start, and the gradient
+test alone cannot always tell it from a good fit, so \code{converged} is left
+as it is. The warning is not a guarantee: a fit can stop short of its
+maximum with a relative gradient below 1e-3 and raise nothing.
+The test is relative to the size of the log-likelihood, so a fit that
+meets it is within SAS's tolerance of the maximum, not exactly at it.
+
+The optimizer treats a score it cannot use as zero, so it can stop on
+those zeros far from the maximum. For the single-distribution fits
+(exponential, Weibull, lognormal and loglogistic), a stop where the score
+at the estimates is not finite, or could not be computed, is therefore
+reported as \code{converged = FALSE}, with a warning of class
+\code{"hzr_unverified_convergence"}; \code{rel_gradient_reason} names which.
 }
 
 \section{Baseline distributions}{
@@ -156,28 +574,37 @@ time.  \code{"multiphase"} is the general additive model that lets several such
 shapes coexist.
 
 \describe{
-\item{\code{"weibull"} --- monotone rising or falling hazard (default)}{The
+\item{\code{"weibull"}: monotone rising or falling hazard (default)}{The
 workhorse parametric model: \eqn{H(t \mid \mathbf{x}) = (\mu t)^\nu
     \exp(\eta)}, with hazard \eqn{h \propto t^{\nu - 1}}.  The single shape
 \eqn{\nu} makes risk increase over time (\eqn{\nu > 1}), decrease
 (\eqn{\nu < 1}), or stay flat (\eqn{\nu = 1}).  Use it as the default when
-a single monotone trend describes the hazard.}
-\item{\code{"exponential"} --- constant hazard}{The memoryless special case
+a single monotone trend describes the hazard.  The scale \eqn{\mu} is
+the baseline at \eqn{\mathbf{x} = 0}, so a covariate far from zero
+(a calendar year, an age in days) can push it beyond what a number
+can hold: it is then reported as \code{Inf}, as 0, or as a value too small
+to keep its digits, with a warning of class
+\code{"hzr_unrepresentable_scale"}. The fit keeps \eqn{\log \mu} and its
+standard error, which \code{summary()} shows as a \code{log(mu)} row and
+\code{\link[=predict]{predict()}} reads; \code{coef()} shows \eqn{\mu} as it is, and \code{vcov()}
+gives \code{NA} for it. Centering or rescaling the covariate reports
+\eqn{\mu} itself, without changing the model.}
+\item{\code{"exponential"}: constant hazard}{The memoryless special case
 \eqn{\nu = 1}: a time-invariant baseline rate, \eqn{H(t \mid \mathbf{x}) =
     \mu t \exp(\eta)}.  Use it when the event rate does not change with
 follow-up time (the constant background risk also appears as the
 \code{"constant"} phase in a multiphase model).}
-\item{\code{"loglogistic"} --- unimodal (rise-then-fall) hazard}{A log-logistic
+\item{\code{"loglogistic"}: unimodal (rise-then-fall) hazard}{A log-logistic
 proportional-odds form (covariates act multiplicatively on the odds of
 failure, \eqn{\exp(\eta)}, not as an AFT time shift) whose hazard rises to
 a single peak and then declines when the shape exceeds 1 (and is monotone
 decreasing otherwise), with heavier tails than the log-normal.  Use it
 when risk climbs to an early peak and then eases off.}
-\item{\code{"lognormal"} --- early-peaking, resolving hazard}{An
+\item{\code{"lognormal"}: early-peaking, resolving hazard}{An
 accelerated-failure-time form in which \eqn{\log} time is Gaussian; the
 hazard rises to an early peak and then decays toward zero.  Use it for
 risk that is concentrated early and resolves over time.}
-\item{\code{"multiphase"} --- additive N-phase hazard}{Sums several phase shapes
+\item{\code{"multiphase"}: additive N-phase hazard}{Sums several phase shapes
 into one model, \eqn{H = \sum_j \mu_j(\mathbf{x}) \Phi_j(t)}, so the
 overall hazard can fall, level off, and rise again within one fit.
 Requires \code{phases}; see \code{\link[=hzr_phase]{hzr_phase()}} for the available phase shapes.  This
@@ -319,7 +746,7 @@ nonlinear temporal decomposition mixed effects model. \emph{Stat Methods Med Res
 \code{\link[=hzr_phase]{hzr_phase()}} for specifying multiphase temporal shapes.
 
 Vignettes with worked examples:
-\code{vignette("fitting-hazard-models")} --- single-phase through multiphase fitting,
-\code{vignette("prediction-visualization")} --- prediction types and decomposed hazard plots,
-\code{vignette("inference-diagnostics")} --- bootstrap CIs and model diagnostics.
+\code{vignette("fitting-hazard-models")}: single-phase through multiphase fitting,
+\code{vignette("prediction-visualization")}: prediction types and decomposed hazard plots,
+\code{vignette("inference-diagnostics")}: bootstrap CIs and model diagnostics.
 }

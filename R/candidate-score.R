@@ -8,10 +8,16 @@
 # ---------------
 # Lower `score` is always "better" in the candidate's favour:
 #
+#   criterion="score", mode="entry" ->  p_value(Q for the pinned new coef)
 #   criterion="wald", mode="entry"  ->  p_value(candidate for new coef)
 #   criterion="wald", mode="drop"   ->  1 - p_value(current)  (high p -> easy drop)
 #   criterion="aic",  mode="entry"  ->  AIC(candidate) - AIC(current)
 #   criterion="aic",  mode="drop"   ->  DeltaAIC_drop ~ W - 2*df  (Wald->LR approx)
+#
+# `criterion = "score"` is an ENTRY-ONLY criterion: it exists to remove the
+# per-candidate refit from the forward step, and the drop path never had one to
+# remove.  Following SAS, removal is tested on the current model's Wald
+# p-value, so hzr_stepwise() maps score -> wald for the backward step.
 #
 # For forward selection: argmin(score) picks the best candidate and the
 # threshold test is `score < slentry` (Wald) or `score < 0` (AIC).
@@ -55,41 +61,59 @@
 }
 
 
-#' Score a stepwise candidate under Wald or AIC criterion
+#' Score a stepwise candidate under the score, Wald or AIC criterion
 #'
 #' Produces a unified "smaller is better" score for either adding new
 #' coefficients to a model (`mode = "entry"`) or dropping coefficients
-#' from the current model (`mode = "drop"`), under a Wald or AIC
+#' from the current model (`mode = "drop"`), under the score, Wald or AIC
 #' criterion.
 #'
-#' @param criterion Either `"wald"` or `"aic"`.
+#' @param criterion One of `"score"`, `"wald"`, or `"aic"`.  `"score"` is
+#'   entry-only (see the file header).
 #' @param mode Either `"entry"` or `"drop"`.
 #' @param current Fitted `hazard` object that is the starting point for
 #'   the step.  Always required (AIC baseline; Wald target for drops).
 #' @param candidate Fitted `hazard` object containing the proposed new
-#'   coefficient(s).  Required when `mode = "entry"`; ignored otherwise.
+#'   coefficient(s).  Required when `mode = "entry"` under the `"wald"` and
+#'   `"aic"` criteria; ignored otherwise.  The `"score"` criterion has no
+#'   candidate fit (that is the point of it) and takes `score` instead.
+#' @param score Precomputed `.hzr_score_q()` result (`list(stat, df,
+#'   p_value)`).  Required when `criterion = "score"`; ignored otherwise.
 #' @param names Character vector of coefficient names being tested.
 #'   Must exist in the target fit (`candidate` for entries, `current`
-#'   for drops).
+#'   for drops).  Purely descriptive under `criterion = "score"`, which
+#'   never looks a coefficient up by name.
 #'
 #' @return A list with:
 #' \describe{
 #'   \item{score}{Numeric, smaller is better (see file header).}
 #'   \item{criterion}{Echoed input.}
 #'   \item{mode}{Echoed input.}
-#'   \item{stat}{Wald z (scalar) or chi^2 (joint).}
+#'   \item{stat}{Wald z (scalar) or chi^2 (joint), or the score Q.}
+#'   \item{stat_type}{What `stat` is, and so what reference distribution
+#'     recomputes its p-value: `"score_q"` (chi^2 on `df`), `"wald_z"`
+#'     (standard normal) or `"wald_chisq"` (chi^2 on `df`).  `df` alone does
+#'     not distinguish these (a scalar Wald z and a score Q are both
+#'     recorded at `df = 1`), so a caller recomputing from `stat` needs
+#'     this.}
 #'   \item{df}{Integer degrees of freedom.}
 #'   \item{p_value}{Always populated when computable.}
 #'   \item{delta_aic}{Always populated when computable.}
 #'   \item{names}{Echoed input.}
+#'   \item{reason}{Why `score` is `NA` when the cause is known, else `NA`:
+#'     `"rows_differ"` for an AIC entry whose candidate was fitted on other
+#'     rows than `current`; `"loglik_below_base"` for an AIC or Wald entry
+#'     whose refit ended below `current`'s log-likelihood, which it contains
+#'     (its `p_value` and `stat` are then `NA` too).}
 #' }
 #'
 #' @keywords internal
 #' @noRd
-.hzr_candidate_score <- function(criterion = c("wald", "aic"),
+.hzr_candidate_score <- function(criterion = c("score", "wald", "aic"),
                                   mode      = c("entry", "drop"),
                                   current,
                                   candidate = NULL,
+                                  score     = NULL,
                                   names) {
   criterion <- match.arg(criterion)
   mode      <- match.arg(mode)
@@ -97,6 +121,34 @@
   if (!inherits(current, "hazard")) {
     stop("`current` must be a fitted `hazard` object.", call. = FALSE)
   }
+
+  if (criterion == "score") {
+    # Entry-only.  hzr_stepwise() maps score -> wald before the backward step,
+    # so reaching here with mode = "drop" is a caller bug, not a user error.
+    if (mode != "entry") {
+      stop("The score criterion is entry-only; `mode` must be 'entry'.",
+           call. = FALSE)
+    }
+    # `names` is a formal of this function, so spell base::names() out rather
+    # than relying on R skipping the non-function binding.
+    if (!is.list(score) ||
+          !all(c("stat", "df", "p_value") %in% base::names(score))) {
+      stop("`score` must be a `.hzr_score_q()` result when criterion = 'score'.",
+           call. = FALSE)
+    }
+    return(list(
+      score     = score$p_value,   # smaller p = stronger entry case
+      criterion = criterion,
+      mode      = mode,
+      stat      = score$stat,
+      stat_type = "score_q",
+      df        = score$df,
+      p_value   = score$p_value,
+      delta_aic = NA_real_,        # no candidate refit to take an AIC from
+      names     = names
+    ))
+  }
+
   if (mode == "entry") {
     if (is.null(candidate) || !inherits(candidate, "hazard")) {
       stop("`candidate` must be a fitted `hazard` object when mode = 'entry'.",
@@ -117,11 +169,38 @@
     if (is.finite(wald$stat)) wald$stat else NA_real_
   }
 
+  reason <- NA_character_
+  below_base <- FALSE
+  if (mode == "entry") {
+    # Two log-likelihoods compare only over the same rows. A multiphase refit
+    # drops every row where the candidate is missing, so its log-likelihood
+    # sums fewer terms and a noise variable won by its NAs alone (#488).
+    same_rows <- identical(.hzr_fit_row_mask(current),
+                           .hzr_fit_row_mask(candidate))
+    # The candidate model contains the current one, so at its optimum its
+    # log-likelihood cannot be lower. A refit that ends below it did not
+    # converge, whatever `converged` says, and neither its dAIC (#490) nor its
+    # Wald test (#538) describes an optimum: it was rejected as if tested.
+    # The tolerance is the one hzr_stepwise() applies to an entered model, so
+    # optimizer noise does not fire it.
+    ll_cur <- current$fit$objective
+    ll_can <- candidate$fit$objective
+    below_base <- same_rows && isTRUE(is.finite(ll_cur)) &&
+      isTRUE(is.finite(ll_can)) &&
+      ll_can < ll_cur - 1e-8 * max(1, abs(ll_cur))
+    if (below_base) {
+      reason <- "loglik_below_base"
+      wald$p_value <- NA_real_
+      wald$stat <- NA_real_
+    }
+  }
   # AIC components
   if (criterion == "aic" && mode == "entry") {
     aic_cur <- .hzr_aic(current)
     aic_can <- .hzr_aic(candidate)
-    delta   <- if (is.finite(aic_cur) && is.finite(aic_can)) {
+    if (!same_rows) reason <- "rows_differ"
+    delta   <- if (same_rows && !below_base &&
+                     is.finite(aic_cur) && is.finite(aic_can)) {
       aic_can - aic_cur
     } else {
       NA_real_
@@ -151,9 +230,35 @@
     criterion = criterion,
     mode      = mode,
     stat      = wald$stat,
+    # A one-df Wald is reported as a z, not as its square, so it and a score Q
+    # are indistinguishable on `df` alone while calling for different
+    # reference distributions.
+    stat_type = if (wald$df == 1L) "wald_z" else "wald_chisq",
     df        = wald$df,
     p_value   = wald$p_value,
     delta_aic = delta,
-    names     = names
+    names     = names,
+    # Why `score` is NA when a cause is known (`"rows_differ"`,
+    # `"loglik_below_base"`); else NA.
+    reason    = reason
   )
+}
+
+
+#' Which of the caller's rows a fit's likelihood was evaluated on
+#'
+#' A multiphase fit records the rows its phase designs kept in
+#' `$fit$rows_used`, over the full length of `$data$time`. A fit without that
+#' record dropped none, so every row is in.
+#'
+#' @param fit A fitted `hazard` object.
+#' @return Logical vector, one element per row of `$data$time`.
+#' @keywords internal
+#' @noRd
+.hzr_fit_row_mask <- function(fit) {
+  n <- length(fit$data$time)
+  used <- fit$fit$rows_used
+  # Unnamed: the record carries row names when a phase has a design, and none
+  # when no phase does, and those are the same rows.
+  if (is.logical(used) && length(used) == n) unname(used) else rep(TRUE, n)
 }

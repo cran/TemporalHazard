@@ -1,3 +1,7 @@
+# Too slow for the CRAN check time budget; runs on CI and locally.
+# See "Where the check's time actually goes" in AGENTS.md.
+skip_on_cran()
+
 # SAS parity tests for hzr_stepwise().  Skip gracefully when the
 # fixture file under inst/fixtures/ is absent, so the package installs
 # and passes CI without any SAS capture.
@@ -13,13 +17,18 @@
 #     out_path  = "inst/fixtures/stepwise-avc-forward-wald.rds"
 #   )
 #
-# ALGORITHMIC NOTE: SAS HAZARD uses Q-statistics (score test, evaluated at the
-# current parameter estimates without refitting) for stepwise candidate
-# selection.  R's hzr_stepwise(criterion = "wald") uses full model refits and
-# Wald chi-square from the fitted model.  These produce different intermediate
-# statistics and different step sequences, so row-by-row step comparison is not
-# meaningful.  The test instead verifies that R selects largely the same final
-# variable set and achieves a competitive log-likelihood.
+# ALGORITHMIC NOTE: R's hzr_stepwise(criterion = "score") now computes the same
+# Q statistic SAS HAZARD uses for selection (score test at the current
+# estimates, no refit), including SAS's approximation that ignores
+# shaping-parameter covariances. Per-step comparison is therefore meaningful,
+# where it previously was not.
+#
+# The whole-model check below still drives R with criterion = "wald" -- its
+# generous tolerances were calibrated against the Wald refit path, and the
+# variable set it produces (6 covariates) matches SAS's count where the score
+# path selects a slightly smaller model.  The fixture's meta$criterion records
+# "score" because that is what SAS computed; the R comparison mode is a separate
+# choice, so this runner pins "wald" explicitly rather than reading it back.
 
 .stepwise_parity_tolerance <- list(
   logLik      = 10,    # absolute; generous to account for Q-stat vs Wald path difference
@@ -74,7 +83,7 @@
     scope     = scope_mp,
     data      = avc,
     direction = fix$meta$direction,
-    criterion = fix$meta$criterion,
+    criterion = "wald",
     slentry   = fix$meta$slentry,
     slstay    = fix$meta$slstay,
     force_in  = fix$scope$force_in,
@@ -177,4 +186,98 @@ test_that("fixture validator accepts a well-formed fixture skeleton", {
     final = list(coef = data.frame(), logLik = -100, iterations = 7L)
   )
   expect_silent(TemporalHazard:::.hzr_validate_stepwise_fixture(ok))
+})
+
+
+test_that("R's per-step Q matches SAS's for the first entered variable", {
+  fx <- .hzr_load_stepwise_fixture("avc-forward-wald")
+  testthat::skip_if(is.null(fx), "stepwise-avc-forward-wald fixture not installed")
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+
+  base <- suppressWarnings(hazard(
+    survival::Surv(int_dead, dead) ~ 1, data = avc, dist = "multiphase",
+    phases = list(
+      early    = hzr_phase("cdf", t_half = 0.1512095, nu = 1.438652, m = 1,
+                           fixed = "shapes"),
+      constant = hzr_phase("constant")
+    ),
+    fit = TRUE
+  ))
+  nuis   <- .hzr_score_nuisance(base)
+  enters <- fx$steps[fx$steps$action == "enter", ]
+  first  <- enters[1L, ]
+  q <- .hzr_score_q(base, var = first$variable, phase = first$phase,
+                    data = avc, nuisance = nuis)
+
+  # SAS's Q for com_iv@early at the intercept-only two-phase model is 34.3396.
+  # The multiphase optimiser perturbs its start from the ambient RNG, so Q
+  # scatters ~1e-5 relative between runs; 1e-2 clears that by three orders of
+  # magnitude while still rejecting the rounded-shape model (Q ~34.86, off by
+  # 1.5e-2) that the fixed shapes here exist to avoid.
+  expect_equal(q$stat, first$stat, tolerance = 1e-2)
+})
+
+
+test_that("score selection refits once per accepted step, not once per candidate", {
+  skip_if_not_installed("numDeriv")
+  # The whole point of criterion = "score": the reduced-model information is
+  # inverted once per step and every candidate is scored without a refit, so the
+  # only refit is the winner's -- one per accepted step. Wald refits EVERY
+  # candidate at EVERY step, so its refit count is strictly larger. Counting the
+  # refit calls asserts that invariant directly; a wall-clock comparison would
+  # measure the same thing but flake on a loaded CI box.
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  base <- hazard(survival::Surv(int_dead, dead) ~ 1, data = avc,
+                 dist = "weibull", theta = c(mu = 0.01, nu = 0.5), fit = TRUE)
+  scope <- ~ age + mal + com_iv
+
+  count_refits <- function(criterion, ...) {
+    orig <- TemporalHazard:::.hzr_refit_with_scope
+    n <- 0L
+    counter <- function(...) {
+      n <<- n + 1L
+      orig(...)
+    }
+    utils::assignInNamespace(".hzr_refit_with_scope", counter,
+                             ns = "TemporalHazard")
+    on.exit(utils::assignInNamespace(".hzr_refit_with_scope", orig,
+                                     ns = "TemporalHazard"))
+    fit <- suppressWarnings(hzr_stepwise(
+      base, scope = scope, data = avc, criterion = criterion,
+      direction = "forward", slentry = 0.3, slstay = 0.2, trace = FALSE, ...
+    ))
+    enter <- fit$steps[fit$steps$action == "enter", ]
+    list(n = n, n_enter = nrow(enter), entered = enter$variable,
+         # Candidates the score could not test and refitted instead, and how
+         # many of those went on to win their step.
+         n_fallback = fit$criteria$n_wald_fallbacks %||% 0L,
+         n_fallback_won = sum(enter$stat_type == "wald_z"),
+         stopped_untested = fit$criteria$stopped_uncomputable)
+  }
+
+  # A step where every candidate is scored: the only refit is the winner's.
+  first <- count_refits("score", max_steps = 1L)
+  expect_identical(first$n_fallback, 0L)
+  expect_equal(first$n_enter, 1L)
+  expect_equal(first$n, first$n_enter)
+
+  score <- count_refits("score")
+  wald  <- count_refits("wald")
+
+  # One refit per accepted step, plus one for each candidate the score test
+  # could not test, which is refitted and tested by Wald. A rescued winner's
+  # refit is reused, not repeated. With no fallback this is the equality
+  # above; it used to be asserted for the whole screen, and held only because
+  # the screen stopped after `com_iv`: on this fit the numeric information
+  # cannot be formed once `com_iv` is in, every remaining candidate read
+  # `nuisance_singular`, and none was tested (#570).
+  expect_equal(score$n,
+               score$n_enter + score$n_fallback - score$n_fallback_won)
+  expect_false(score$stopped_untested)
+  # The score criterion now reaches the Wald criterion's selection,
+  expect_identical(score$entered, wald$entered)
+  # with strictly fewer refits than Wald's per-candidate loop.
+  expect_lt(score$n, wald$n)
 })

@@ -1,6 +1,14 @@
 ## ----setup, include=FALSE-----------------------------------------------------
+# R CMD build installs the package into R_BUILD_TEMPLIB. A build launched
+# through callr (rcmdcheck, devtools) passes Quarto's R session a profile
+# that resets .libPaths() without it, and every chunk skipped (#276).
+templib <- Sys.getenv("R_BUILD_TEMPLIB")
+if (dir.exists(templib)) .libPaths(c(templib, .libPaths()))
 has_pkg <- requireNamespace("TemporalHazard", quietly = TRUE)
 if (has_pkg) library(TemporalHazard)
+# On CI a package that cannot load must fail the build, not skip every
+# chunk and pass over nothing (#276). loadNamespace() says why it failed.
+if (nzchar(Sys.getenv("CI"))) loadNamespace("TemporalHazard")
 knitr::opts_chunk$set(echo = TRUE, collapse = TRUE, comment = "#>",
                       eval = has_pkg)
 
@@ -11,7 +19,7 @@ layout <- data.frame(
     rep("User API", 2),
     rep("Multiphase engine", 3),
     rep("Single-phase likelihoods", 4),
-    rep("Shared infrastructure", 5)
+    rep("Shared infrastructure", 4)
   ),
   File = c(
     "hazard_api.R", "argument_mapping.R",
@@ -19,7 +27,7 @@ layout <- data.frame(
     "likelihood-weibull.R", "likelihood-exponential.R",
     "likelihood-loglogistic.R", "likelihood-lognormal.R",
     "optimizer.R", "math_primitives.R", "formula-helpers.R",
-    "golden_fixtures.R", "parity-helpers.R"
+    "parity-helpers.R"
   ),
   Purpose = c(
     "hazard(), predict.hazard(), print/summary/coef/vcov S3 methods",
@@ -34,11 +42,10 @@ layout <- data.frame(
     "Generic L-BFGS-B/BFGS optimizer with Hessian-based vcov",
     "Numerically stable log1pexp, log1mexp, clamp_prob",
     "Surv() formula parsing for right/left/interval censoring",
-    "Synthetic fixture generators (.rds reference outputs)",
     "Stubs for cross-validating against C HAZARD binary"
   )
 )
-knitr::kable(layout, caption = "R source files by architectural layer")
+knitr::kable(layout, caption = "Selected R source files by architectural layer")
 
 
 ## ----theta-layout, echo=FALSE-------------------------------------------------
@@ -160,7 +167,7 @@ str(avc)
 avc_vars <- data.frame(
   Variable = c("study", "status", "inc_surg", "opmos", "age", "mal",
                "com_iv", "orifice", "dead", "int_dead", "op_age"),
-  Label = c("Study number", "NYHA functional class (I-V)", "Surgical grade of AV valve incompetence",
+  Label = c("Study number", "NYHA functional class (I-IV)", "Surgical grade of AV valve incompetence",
             "Date of operation (months since Jan 1967)", "Age (months) at repair",
             "Important associated cardiac anomaly", "Interventricular communication",
             "Accessory left AV valve orifice", "Death (event indicator)",

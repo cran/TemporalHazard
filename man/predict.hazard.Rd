@@ -16,11 +16,62 @@
 )
 }
 \arguments{
-\item{object}{A \code{hazard} object.}
+\item{object}{A \code{hazard} object. One built with \code{fit = FALSE} holds the
+starting values it was given rather than estimates, so predicting from
+it warns (condition class \code{hzr_unfitted_prediction}); under
+\code{dist = "multiphase"} it is an error instead, because the per-phase
+designs are resolved only when the model is fitted. To evaluate a model
+at parameters you supply, use \code{\link[=hzr_evaluate]{hzr_evaluate()}}. The warning is governed
+by \code{options(TemporalHazard.warn_unfitted_prediction = )}, which this
+package's own tests set to \code{FALSE} where they exercise that capability
+deliberately; leaving it on is what tells a reader that a number came
+from a starting value.}
 
 \item{newdata}{Optional matrix or data frame of predictors. For types requiring
 time (e.g., "survival", "cumulative_hazard"), newdata should include a \code{time}
-column, or time will be taken from the fitted object's data.}
+column, or time will be taken from the fitted object's data.
+Covariates are matched to the model by column name, so their order does
+not matter. A formula fit rebuilds its designs from the formulas,
+global and per phase, with the factor levels and contrasts the fit
+saw, so a factor can be given as a level label. \code{newdata} may
+instead carry the
+fit's design-matrix columns by name (\code{grpyoung} for a factor \code{grp});
+these are used only when no formula variable is given (a numeric
+variable that is itself a column counts only if another column, such
+as \code{I(age^2)}, is built from it). With all the
+variables given, the design is rebuilt from them, so a design column
+that contradicts one is ignored; some variables beside the design
+columns, with others missing, is an error. That error is conservative
+in two cases where nothing contradicts: \code{poly()} design columns given
+with the variable they are built from but without another variable,
+and a non-syntactic name such as \verb{my age} given both as the design
+column \code{`my age`} and as the variable. Give all of the formula's
+variables, or only the design columns. A
+column the model does not use is
+ignored, and a covariate the model needs but \code{newdata} lacks is an error.
+Only the columns of the model's \code{data} are taken from \code{newdata}: a
+formula constant (\code{cutoff} in \code{I(age > cutoff)}, spline knots) comes
+from the formula's environment, and a term that uses row-level values
+kept outside \code{data} (\code{~ zz}, with \code{zz} a vector in the workspace) is an
+error, even when \code{newdata} has a \code{zz} column; move it into \code{data} and
+refit.
+A term that computes a statistic over \code{newdata}'s rows warns only for
+the functions the check knows (see "How \code{newdata} is evaluated"). Any
+other function, including one you write, is still recomputed from
+\code{newdata}'s rows, silently: no warning means undetected, not safe.
+A fit made with an unnamed \code{x} matrix matches by position. For the types
+requiring time, a \code{newdata} with only a \code{time} column evaluates the
+baseline, with every model-matrix column at 0. For \code{age} that is an age
+of 0; for \code{scale(age)} it is the mean age. \code{predict()} warns, once per
+call and with class \code{"hzr_predict_covariates_zero"}, naming the data
+variables to supply (\code{age}, not \code{scale(age)}). Supply them in \code{newdata}
+to predict at other values, or muffle that class when the baseline is
+what you want. A model without covariates does not warn.
+
+For those types, the \code{time} column of \code{newdata} is always the
+prediction time, so a model whose formula uses a variable named \code{time}
+(a covariate, or a constant such as \code{I(age > time)}) cannot be given
+those types at \code{newdata}; rename it and refit.}
 
 \item{type}{Prediction type:
 \itemize{
@@ -54,7 +105,23 @@ The combination is not available for \code{type = "survival"} (per-phase
 survival is not additive).}
 
 \item{level}{Numeric confidence level in \verb{(0, 1)}; default \code{0.95}.
-Only used when \code{se.fit = TRUE}.}
+Only used when \code{se.fit = TRUE}.
+
+\strong{SAS draws narrower bands than this by default.} \verb{PROC HAZPRED} takes
+its width from \verb{CLIMITS=}, whose default is 0, and any value outside
+\verb{(0, 1)} gives a multiplier of exactly one, so the band is one standard
+error, 68.3\%, not 95\%. Reproducing a SAS figure at this
+function's default therefore yields a band about 1.96 times wider than the
+one being checked against, with no error and no warning on either side.
+Pass the SAS level explicitly to match:
+
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{predict(fit, newdata, type = "survival", se.fit = TRUE,
+        level = 2 * stats::pnorm(1) - 1, conf.type = "logit")
+}\if{html}{\out{</div>}}
+
+The default is left at \code{0.95} deliberately: it is the right R-side
+default, and silently adopting SAS's would make this method disagree with
+every other R modelling function.}
 
 \item{conf.type}{Transform for \code{type = "survival"} confidence limits when
 \code{se.fit = TRUE}: \code{"log-log"} (default) builds them on \verb{log(-log S)} (the
@@ -69,7 +136,12 @@ HAZPRED). Only used when \code{se.fit = TRUE}.}
 When \code{se.fit = FALSE} (default), a numeric vector of predictions.
 When \code{se.fit = TRUE}, a data frame with columns \code{fit}, \code{se.fit}, \code{lower},
 \code{upper} (delta-method point estimate, standard error, and confidence
-limits at \code{level}). For multiphase \code{type = "cumulative_hazard"} with
+limits at \code{level}). \code{se.fit} is always the standard error of \code{fit} on
+its own scale: for \code{type = "survival"} that is \code{S * se(H)}, the delta
+method applied to \code{S = exp(-H)}. The survival limits are built from
+\code{se(H)} on the \code{conf.type} scale, so they are not \verb{fit +/- z * se.fit}.
+\verb{PROC HAZPRED} prints no standard error, only the limits.
+For multiphase \code{type = "cumulative_hazard"} with
 \code{decompose = TRUE}, a long data frame (\code{time}, \code{component}, \code{fit},
 \code{se.fit}, \code{lower}, \code{upper}); with \code{decompose = TRUE} and \code{se.fit = FALSE},
 a wide data frame of per-phase contributions.
@@ -90,7 +162,58 @@ it will be used; otherwise, the time vector from the fitted object is used.
 For models fit with \code{time_windows}, predictions for \code{type = "linear_predictor"}
 or \code{"hazard"} also require time values (via \code{newdata$time} or fitted-time fallback)
 so window-specific coefficients can be selected.
+
+See the section "How \code{newdata} is evaluated" for what is recomputed from
+\code{newdata} and when \code{predict()} warns.
 }
+\section{How \code{newdata} is evaluated}{
+
+\code{predict()} evaluates the model's formulas on \code{newdata} as given, as
+\code{\link[stats:predict.lm]{stats::predict.lm()}} does. It uses the fit's factor levels and
+contrasts, and the centering, basis and knots that a top-level \code{scale()},
+\code{poly()}, \code{ns()} or \code{bs()} term recorded. Everything else is recomputed
+from \code{newdata}, so a prediction can differ from the fit without any
+error. \code{predict()} warns, naming the cause, in three such cases. The
+predicted values are the same with or without the warning.
+\itemize{
+\item \strong{A term that computes a statistic over the rows.} In
+\code{I(age - mean(age))}, \code{I(scale(age)^2)} or
+\code{I(as.integer(factor(grp)))}, the mean, the scaling or the factor
+coding comes from \code{newdata}'s rows, so a row's prediction depends on
+which other rows are given. Compute such a variable in the data before
+fitting, and supply it in \code{newdata}. The check knows a fixed list of
+R's functions, among them \code{mean()}, \code{median()}, \code{min()}, \code{max()},
+\code{quantile()}, \code{sd()}, \code{IQR()}, \code{ave()}, \code{rank()}, \code{length()},
+\code{scale()}, \code{factor()} and \code{cut()} with a count of breaks. A function
+not on it, including one you write, is recomputed from \code{newdata}'s
+rows just the same, with no warning: the list is a floor, not a
+boundary.
+\item \strong{A column of another type than the fit saw.} A numeric column given
+as character compares as text (\code{"154.6" > 50} is \code{FALSE}), and a
+\code{difftime} in other units is used in those units. The check compares
+against the fitting data the fit kept, which fits saved before
+TemporalHazard 1.1.0 do not have, so those fits are not checked. A
+factor given as its level labels, or an integer for a double, is not
+a mismatch.
+\item \strong{A design rebuilt under this session's contrasts.} A formula fit
+saved by version 1.2.10 or earlier kept no record of its contrasts,
+and its design is rebuilt under \code{options(contrasts =)}. \code{predict()}
+warns when that option names a function other than \code{contr.treatment}
+or \code{contr.poly} and the rebuilt design is used. A redefined
+\code{contr.treatment} is not detected.
+}
+
+Two cases are not detected:
+\itemize{
+\item A constant the formula reads from its environment, such as \code{cutoff}
+in \code{I(age > cutoff)}, is read when you predict, so a value changed
+since the fit is used.
+\item A comparison of strings, such as \code{I(grp > "b")}, follows the session's
+collation (\code{LC_COLLATE}), which can order strings differently from the
+session that fitted the model.
+}
+}
+
 \examples{
 # -- Basic predictions ------------------------------------------------
 set.seed(1)

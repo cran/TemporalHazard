@@ -156,10 +156,12 @@ test_that("Weibull analytic jacobian matches numDeriv (cumhaz)", {
   set.seed(3)
   t_new <- c(0.3, 0.8, 1.5, 2.2)
   x_new <- matrix(c(-0.5, 0, 0.4, 1.2), ncol = 1)
-  theta <- c(mu = 0.6, nu = 1.2, beta = 0.25)
+  # The Jacobian is taken with respect to log(mu), the scale predict() reads
+  # a Weibull fit on (#566); the numeric side differentiates on that scale.
+  theta <- c(log_mu = log(0.6), nu = 1.2, beta = 0.25)
 
   cumhaz_fn <- function(th) {
-    (th[1] * t_new) ^ th[2] * exp(as.numeric(x_new %*% th[3:length(th)]))
+    (exp(th[1]) * t_new) ^ th[2] * exp(as.numeric(x_new %*% th[3:length(th)]))
   }
   J_ana <- TemporalHazard:::.hzr_predict_jacobian_weibull(
     "cumulative_hazard", theta, t_new, x_new, length(theta)
@@ -344,12 +346,19 @@ test_that(".hzr_free_vcov restricts to finite-diagonal free parameters", {
   expect_equal(res$free_idx, 1:2)
   expect_equal(res$vcov_use, V)
 
-  # One fixed parameter (NA row/col) -> restricted to the free submatrix.
+  # One fixed parameter (NA row/col) -> restricted to the free submatrix. It
+  # must be marked fixed: an NA that is not is a masked variance (#586).
   Vf <- matrix(NA_real_, 3, 3)
   Vf[c(1, 3), c(1, 3)] <- c(0.04, 0.00, 0.00, 0.09)
-  res2 <- TemporalHazard:::.hzr_free_vcov(Vf, p = 3L)
+  res2 <- TemporalHazard:::.hzr_free_vcov(Vf, p = 3L,
+                                          fixed = c(FALSE, TRUE, FALSE))
   expect_equal(res2$free_idx, c(1L, 3L))
   expect_equal(dim(res2$vcov_use), c(2L, 2L))
+  expect_warning(
+    masked <- TemporalHazard:::.hzr_free_vcov(Vf, p = 3L),
+    "no variance for an estimated parameter"
+  )
+  expect_null(masked)
 
   # Unusable vcov -> NULL with a warning.
   expect_warning(
@@ -449,4 +458,124 @@ test_that("predict(type='survival') conf.type selects the CL transform", {
   # Invalid conf.type is rejected.
   expect_error(predict(fit, newdata = grid, type = "survival", se.fit = TRUE,
                        conf.type = "bogus"))
+})
+
+# The SAS band level documented on predict() and hzr_nelson() (#204).
+#
+# SAS %KAPLAN / %NELSONT / HAZPRED default to CLEVEL = 0.68268948, documented
+# in the macro source as "(1 sd)", which makes T_ALPHA 1 to seven decimals
+# (the literal is truncated): a 68.3% band, not 95%. The help pages now tell
+# a caller to pass `level = 2 * pnorm(1) - 1` to reproduce a SAS figure.
+# These pin that recipe, so the documented incantation cannot quietly stop
+# being the right one.
+
+test_that("the documented SAS level is the 1-SD level", {
+  lvl <- 2 * stats::pnorm(1) - 1
+  # This is what SAS computes as T_ALPHA=PROBIT(0.5+(0.5*&CLEVEL)).
+  expect_equal(stats::qnorm(0.5 + 0.5 * lvl), 1, tolerance = 1e-12)
+  # The macro spells CLEVEL as a truncated literal, so its T_ALPHA is 1 only
+  # to about seven decimals -- close enough to reproduce a plot, and worth
+  # recording so "exactly 1" is not carried around as a fact.
+  expect_equal(stats::qnorm(0.5 + 0.5 * 0.68268948), 1, tolerance = 1e-7)
+  expect_lt(abs(lvl - 0.68268948), 1e-7)
+})
+
+test_that("the SAS level narrows a band by the z ratio, on the CL's own scale", {
+  skip_on_cran()
+  # NOT (upper - fit) / se.fit: predict() builds cumulative-hazard limits on
+  # the LOG scale (and survival limits on log-log), so the half-width is not
+  # z * se on the natural scale and asserting that fails against correct code.
+  # The invariant that does hold is that the two levels differ by exactly the
+  # ratio of their z values, measured on the scale the limits are built on.
+  set.seed(4)
+  n <- 200
+  fit <- hazard(time = stats::rweibull(n, 1.3, 2), status = rep(1L, n),
+                theta = c(0.4, 1.0), dist = "weibull", fit = TRUE)
+  nd <- data.frame(time = c(0.5, 1, 2))
+
+  sas <- predict(fit, newdata = nd, type = "cumulative_hazard",
+                 se.fit = TRUE, level = 2 * stats::pnorm(1) - 1)
+  d95 <- predict(fit, newdata = nd, type = "cumulative_hazard", se.fit = TRUE)
+
+  # Guard the guard: a degenerate band makes every ratio below 0/0 or 1.
+  expect_true(all(is.finite(sas$se.fit) & sas$se.fit > 0))
+  expect_true(all(sas$upper > sas$fit))
+
+  ratio <- log(d95$upper / d95$fit) / log(sas$upper / sas$fit)
+  expect_equal(ratio, rep(stats::qnorm(0.975), nrow(nd)), tolerance = 1e-6)
+
+  # And the plain statement the documentation makes: the default band is
+  # materially wider than the SAS one, so reproducing a figure at level = 0.95
+  # does not match it.
+  expect_true(all(d95$upper > sas$upper))
+})
+
+# ---------------------------------------------------------------------------
+# (9) Survival se.fit is the SE of S, not of H
+# ---------------------------------------------------------------------------
+
+# `fit` is S = exp(-H), so its delta-method SE is |dS/dH| se(H) = S se(H).
+# The column used to carry se(H) itself -- bit-identical to the
+# cumulative-hazard se.fit -- under the survival label. The limits are still
+# built from se(H) on the conf.type scale, so they must not move.
+expect_survival_se_is_se_of_s <- function(fit, nd, info) {
+  ch <- predict(fit, newdata = nd, type = "cumulative_hazard", se.fit = TRUE)
+  z <- stats::qnorm(0.975)
+  for (ct in c("log-log", "logit")) {
+    sv <- predict(fit, newdata = nd, type = "survival", se.fit = TRUE,
+                  conf.type = ct)
+    s <- exp(-ch$fit)
+    expect_equal(sv$fit, s, tolerance = 1e-12, info = info)
+    expect_equal(sv$se.fit, s * ch$se.fit, tolerance = 1e-10, info = info)
+    # Not vacuous: S is well below 1 on the grid, so S se(H) != se(H).
+    expect_lt(min(sv$fit), 0.8, label = info)
+    expect_false(isTRUE(all.equal(sv$se.fit, ch$se.fit)), info = info)
+  }
+  # Both limit transforms still come from se(H): log-log through
+  # se(log H) = se(H) / H, logit through se(logit(1 - S)) = se(H) / (1 - S).
+  ll <- predict(fit, newdata = nd, type = "survival", se.fit = TRUE)
+  expect_equal(ll$lower, exp(-ch$fit * exp(z * ch$se.fit / ch$fit)),
+               tolerance = 1e-10, info = info)
+  expect_equal(ll$upper, exp(-ch$fit * exp(-z * ch$se.fit / ch$fit)),
+               tolerance = 1e-10, info = info)
+  lg <- predict(fit, newdata = nd, type = "survival", se.fit = TRUE,
+                conf.type = "logit")
+  zl <- log(expm1(ch$fit))
+  se_zl <- ch$se.fit / (1 - exp(-ch$fit))
+  expect_equal(lg$lower, stats::plogis(-(zl + z * se_zl)),
+               tolerance = 1e-10, info = info)
+  expect_equal(lg$upper, stats::plogis(-(zl - z * se_zl)),
+               tolerance = 1e-10, info = info)
+}
+
+test_that("survival se.fit is S * se(H) for the single distributions", {
+  skip_on_cran()
+  df <- make_toy()
+  nd <- data.frame(time = c(0.5, 2, 6), x = 0)
+  for (dist in c("weibull", "exponential", "loglogistic", "lognormal")) {
+    theta_init <- switch(
+      dist,
+      weibull = c(0.5, 1, 0),
+      exponential = c(log(0.3), 0),
+      loglogistic = c(0, 0, 0),
+      lognormal = c(0, 0, 0)
+    )
+    fit <- hazard(survival::Surv(time, status) ~ x, data = df, dist = dist,
+                  theta = theta_init, fit = TRUE)
+    expect_survival_se_is_se_of_s(fit, nd, info = dist)
+  }
+})
+
+test_that("survival se.fit is S * se(H) for a multiphase fit", {
+  skip_on_cran()
+  df <- make_toy()
+  phases <- list(
+    early = hzr_phase("cdf", t_half = 0.3, nu = 1, m = 1, fixed = "shapes"),
+    constant = hzr_phase("constant")
+  )
+  fit <- hazard(survival::Surv(time, status) ~ 1, data = df,
+                dist = "multiphase", phases = phases, fit = TRUE,
+                control = list(n_starts = 2))
+  expect_survival_se_is_se_of_s(fit, data.frame(time = c(0.5, 2, 6)),
+                                info = "multiphase")
 })

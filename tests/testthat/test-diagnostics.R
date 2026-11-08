@@ -1,3 +1,7 @@
+# Too slow for the CRAN check time budget; runs on CI and locally.
+# See "Where the check's time actually goes" in AGENTS.md.
+skip_on_cran()
+
 # tests/testthat/test-diagnostics.R
 # Tests for hzr_deciles() and related diagnostic utilities
 
@@ -194,7 +198,7 @@ test_that("hzr_gof returns correct structure", {
   s <- attr(gof, "summary")
   expect_true(is.list(s))
   expect_named(s, c("total_observed", "total_expected", "final_residual",
-                     "dist", "n"))
+                     "dist", "n", "n_tallied"))
 })
 
 test_that("hzr_gof cumulative observed equals total events", {
@@ -226,22 +230,24 @@ test_that("hzr_gof cumulative hazard is non-negative and increasing", {
   expect_true(all(diff(gof$par_cumhaz) >= -1e-10))
 })
 
-test_that("hzr_gof conservation ratio is reasonable", {
+test_that("hzr_gof conservation ratio is near 1 for a converged Weibull fit", {
   fit <- .fit_avc_weibull()
   gof <- hzr_gof(fit)
 
   s <- attr(gof, "summary")
   ratio <- s$total_expected / s$total_observed
-  # For a reasonable fit, E/O should be in the ballpark (0.5 to 2.0)
-  expect_true(ratio > 0.2 && ratio < 5.0,
-              label = paste("conservation ratio", round(ratio, 3),
-                            "should be between 0.2 and 5.0"))
+  # Expected events are per subject, so a Weibull MLE conserves events up to
+  # how far short of the maximum the optimizer stopped (1.0018 here). The
+  # pre-#254 covariate-mean tally gave 0.82 on this fit.
+  expect_equal(ratio, 1, tolerance = 0.01)
 })
 
 test_that("hzr_gof works with custom time grid", {
   fit <- .fit_avc_weibull()
   t_grid <- seq(1, 200, by = 10)
-  gof <- hzr_gof(fit, time_grid = t_grid)
+  # No exit falls on this grid, so the tallies cover no one, and it says so.
+  expect_warning(gof <- hzr_gof(fit, time_grid = t_grid),
+                 "did not exit at a time_grid point")
 
   expect_equal(nrow(gof), length(t_grid))
   expect_equal(gof$time, t_grid)
@@ -775,6 +781,348 @@ test_that("hzr_bootstrap uses stored data frame when the original symbol is out 
   expect_equal(bs$n_failed, 0)
 })
 
+test_that("hzr_bootstrap resolves call arguments passed by symbol from a function", {
+  # Regression: hzr_bootstrap re-evaluated the stored call in its own frame, so
+  # arguments passed by symbol (theta here) resolved against the package
+  # namespace -> globalenv and were invisible when the fit was built inside a
+  # function. Every replicate threw, the tryCatch swallowed it, and n_success
+  # was silently 0. Building the fit in a helper is what triggers it.
+  data(avc, package = "TemporalHazard")
+  avc <- stats::na.omit(avc)
+  build <- function(d) {
+    th <- c(mu = 0.01, nu = 0.5) # passed by SYMBOL, not inline
+    hazard(survival::Surv(int_dead, dead) ~ 1, data = d, dist = "weibull",
+           theta = th, fit = TRUE)
+  }
+  fit <- build(avc)
+  bs <- hzr_bootstrap(fit, n_boot = 3, seed = 42)
+  expect_gt(bs$n_success, 0)
+  expect_equal(bs$n_failed, 0)
+})
+
+test_that("hazard() captures only the symbols its call references", {
+  # Regression: call_env was parent.frame(), pinning the caller's whole frame
+  # to every fit (measured ~1400x saveRDS bloat) and dragging unrelated data --
+  # including other cohorts -- into any saved model.
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  build <- function(d) {
+    unrelated_local <- matrix(0, nrow = 100, ncol = 100)
+    th <- c(mu = 0.01, nu = 0.5)
+    hazard(survival::Surv(int_dead, dead) ~ 1, data = d, dist = "weibull",
+           theta = th, fit = TRUE)
+  }
+  fit <- build(avc)
+  # `th` and `d` ARE referenced by the call and must be captured.
+  expect_true(exists("th", envir = fit$call_env, inherits = FALSE))
+  expect_true(exists("d", envir = fit$call_env, inherits = FALSE))
+  # `unrelated_local` is NOT referenced and must not be reachable at all --
+  # including through the parent chain, which is why call_env parents to
+  # globalenv() rather than the caller.
+  expect_false(exists("unrelated_local", envir = fit$call_env, inherits = TRUE))
+})
+
+test_that("hazard() does not capture package or base closures", {
+  # Regression: call_env captured any symbol all.names() found, including
+  # `hazard` itself and base functions. R serialises a closure's environment by
+  # reference but its BODY by value, so saveRDS(fit) froze a copy of hazard()'s
+  # body into every fit. A fit saved under one version and bootstrapped after an
+  # upgrade runs that stale body against the new namespace; it throws inside the
+  # replicate, hzr_bootstrap()'s tryCatch swallows it, and the user gets a
+  # silent n_success = 0. Package and base functions must resolve through
+  # call_env's parent (globalenv()) instead of being copied.
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  build <- function(d) {
+    # `c` is referenced BY the call, so all.names() finds it.
+    hazard(survival::Surv(int_dead, dead) ~ 1, data = d, dist = "weibull",
+           theta = c(mu = 0.01, nu = 0.5), fit = TRUE)
+  }
+  fit <- build(avc)
+  expect_false(exists("hazard", envir = fit$call_env, inherits = FALSE))
+  expect_false(exists("c", envir = fit$call_env, inherits = FALSE))
+  # ... but both must still RESOLVE, through call_env's parent.
+  expect_true(exists("hazard", envir = fit$call_env, inherits = TRUE))
+})
+
+test_that("hzr_bootstrap resolves a call that invokes user-defined helpers", {
+  # Regression: call_env selected symbols with all.vars(), which omits FUNCTION
+  # names. A user whose call builds theta/phases via their own helper left those
+  # helpers uncaptured; call_env parents to globalenv(), where a local helper
+  # does not live, so every replicate threw and n_success silently returned 0 --
+  # the bug d9f38ee fixed. all.names() includes function names.
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  build <- function(d) {
+    make_theta <- function() c(mu = 0.01, nu = 0.5) # user-defined helper
+    hazard(survival::Surv(int_dead, dead) ~ 1, data = d, dist = "weibull",
+           theta = make_theta(), fit = TRUE)
+  }
+  fit <- build(avc)
+  expect_true(exists("make_theta", envir = fit$call_env, inherits = FALSE))
+  bs <- hzr_bootstrap(fit, n_boot = 3, seed = 42)
+  expect_gt(bs$n_success, 0)
+  expect_equal(bs$n_failed, 0)
+})
+
+test_that("hzr_bootstrap scope = NULL reports mode = refit and is unaffected", {
+  set.seed(42)
+  fit <- .fit_avc_weibull()
+  bs <- hzr_bootstrap(fit, n_boot = 10, seed = 123)
+
+  expect_identical(bs$mode, "refit")
+  expect_null(bs$scope)
+  expect_gt(bs$n_success, 0)
+  expect_gt(nrow(bs$summary), 0)
+  expect_true(all(bs$summary$pct > 0))
+})
+
+test_that("hzr_bootstrap scope runs embedded stepwise selection per replicate", {
+  set.seed(13)
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  base <- hazard(
+    survival::Surv(int_dead, dead) ~ 1,
+    data  = avc,
+    dist  = "weibull",
+    theta = c(mu = 0.01, nu = 0.5),
+    fit   = TRUE
+  )
+
+  bs <- hzr_bootstrap(base, n_boot = 10, seed = 321,
+                       scope = ~ age + mal + com_iv,
+                       slentry = 0.3, slstay = 0.2)
+
+  expect_s3_class(bs, "hzr_bootstrap")
+  expect_identical(bs$mode, "select")
+  expect_true(is.list(bs$scope) || inherits(bs$scope, "formula"))
+  expect_gt(bs$n_success, 0)
+  expect_true(all(bs$summary$pct > 0 & bs$summary$pct <= 100))
+  # Shape parameters are never dropped by stepwise selection (only
+  # covariates are), so they must be present -- and selected -- in every
+  # successful replicate.
+  shape_rows <- bs$summary[bs$summary$parameter %in% c("mu", "nu"), ]
+  expect_true(all(shape_rows$n == bs$n_success))
+})
+
+test_that("hzr_bootstrap scope reaches criterion = 'score'", {
+  # The score criterion is why the bootstrap screen is feasible at all: it
+  # scores candidates at the current model's MLE with no per-candidate refit.
+  # hzr_bootstrap()'s formal must therefore offer it -- and default to it.
+  skip_if_not_installed("numDeriv")
+  set.seed(13)
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  base <- hazard(
+    survival::Surv(int_dead, dead) ~ 1,
+    data  = avc,
+    dist  = "weibull",
+    theta = c(mu = 0.01, nu = 0.5),
+    fit   = TRUE
+  )
+
+  expect_identical(eval(formals(hzr_bootstrap)$criterion)[1], "score")
+
+  bs <- hzr_bootstrap(base, n_boot = 3, seed = 321,
+                       scope = ~ age + mal,
+                       criterion = "score",
+                       slentry = 0.3, slstay = 0.2)
+  expect_s3_class(bs, "hzr_bootstrap")
+  expect_identical(bs$mode, "select")
+  expect_gt(bs$n_success, 0)
+
+  bs_wald <- hzr_bootstrap(base, n_boot = 3, seed = 321,
+                            scope = ~ age + mal,
+                            criterion = "wald",
+                            slentry = 0.3, slstay = 0.2)
+  expect_s3_class(bs_wald, "hzr_bootstrap")
+  expect_gt(bs_wald$n_success, 0)
+})
+
+test_that("hzr_bootstrap verbose = TRUE shows a progress bar", {
+  fit <- .fit_avc_weibull()
+  out <- capture.output(
+    bs <- hzr_bootstrap(fit, n_boot = 5, seed = 42, verbose = TRUE),
+    type = "output"
+  )
+  # txtProgressBar(style = 3) draws a bar with a percentage; some output must
+  # have been written, and the run must still return a valid object.
+  expect_true(any(nzchar(out)))
+  expect_true(any(grepl("100%|=====", paste(out, collapse = ""))))
+  expect_s3_class(bs, "hzr_bootstrap")
+  expect_gt(bs$n_success, 0)
+})
+
+test_that("hzr_bootstrap suppresses per-replicate fit warnings", {
+  # A fixed-shape multiphase base with covariate scope produces
+  # ill-conditioned per-replicate Hessians (.hzr_safe_solve warns). Those are
+  # not individually actionable and must not leak to the caller; the tryCatch
+  # only catches errors, so this relies on the in-loop suppressWarnings().
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  base <- hazard(
+    survival::Surv(int_dead, dead) ~ 1, data = avc, dist = "multiphase",
+    phases = list(
+      early    = hzr_phase("cdf", t_half = 0.2, nu = 1.4, m = 1,
+                           fixed = "shapes"),
+      constant = hzr_phase("constant")
+    ),
+    fit = TRUE
+  )
+  # Assert the contract this test exists for -- no *per-replicate numerical*
+  # warning escapes -- rather than "no warning at all". The aggregate
+  # uncomputable-score summary is emitted once after the loop, not per
+  # replicate, so a blanket expect_no_warning() here would forbid a
+  # diagnostic this test was never meant to cover.
+  w <- testthat::capture_warnings(
+    hzr_bootstrap(base, n_boot = 5, seed = 7,
+                  scope = list(early    = ~ age + mal + com_iv,
+                               constant = ~ age + mal + com_iv),
+                  slentry = 0.3, slstay = 0.2,
+                  control = list(n_starts = 1))
+  )
+  expect_false(any(grepl("ill-conditioned|rcond|Hessian", w)))
+})
+
+test_that("hzr_bootstrap scope raises immediately on a structurally invalid scope", {
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  base <- hazard(
+    survival::Surv(int_dead, dead) ~ 1,
+    data  = avc,
+    dist  = "weibull",
+    theta = c(mu = 0.01, nu = 0.5),
+    fit   = TRUE
+  )
+
+  # scope must be NULL, a one-sided formula, or a character vector for a
+  # single-distribution fit (hzr_stepwise()'s own validation); this must
+  # raise via the pre-loop validation call, not after n_boot replicates.
+  expect_error(
+    hzr_bootstrap(base, n_boot = 10, scope = 42),
+    "one-sided formula"
+  )
+})
+
+test_that("hzr_bootstrap scope with a nonexistent column warns but does not raise", {
+  # A typo'd (but syntactically valid) scope column is NOT caught by the
+  # pre-loop validation -- hzr_stepwise() itself only warns per candidate
+  # refit failure (see stepwise-step.R .hzr_stepwise_forward_step) and
+  # never selects it. Confirms hzr_bootstrap() inherits that behavior
+  # rather than silently reporting it as n_failed replicates.
+  #
+  # Pinned to criterion = "wald": the refit-failure warning is a property of
+  # the per-candidate refit, which the score path does not perform, so this
+  # mechanism only exists under "wald"/"aic". The stepwise-level analogue
+  # (test-stepwise-integration.R) pins itself the same way.
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  base <- hazard(
+    survival::Surv(int_dead, dead) ~ 1,
+    data  = avc,
+    dist  = "weibull",
+    theta = c(mu = 0.01, nu = 0.5),
+    fit   = TRUE
+  )
+
+  expect_warning(
+    bs <- hzr_bootstrap(base, n_boot = 3, seed = 1,
+                         scope = ~ age + not_a_real_column,
+                         criterion = "wald"),
+    "not_a_real_column"
+  )
+  expect_false("not_a_real_column" %in% bs$summary$parameter)
+})
+
+test_that("hzr_bootstrap(scope=) forwards a caller-supplied trace= without colliding", {
+  # Regression test: select-mode passed `trace = FALSE` to hzr_stepwise()
+  # alongside the forwarded `...`, so a caller-supplied `trace=` in `...`
+  # raised "formal argument matched by multiple actual arguments".
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  base <- hazard(
+    survival::Surv(int_dead, dead) ~ 1,
+    data  = avc,
+    dist  = "weibull",
+    theta = c(mu = 0.01, nu = 0.5),
+    fit   = TRUE
+  )
+
+  bs <- hzr_bootstrap(base, n_boot = 2, seed = 42, scope = ~ age + mal,
+                       trace = TRUE)
+  expect_s3_class(bs, "hzr_bootstrap")
+  expect_gte(bs$n_success, 0L)
+})
+
+test_that("hzr_bootstrap(scope=) forwards control= to a single-distribution fit", {
+  # The Weibull bootstraps above used to pass control = list(n_starts = 1),
+  # which has no effect on a Weibull fit; its "no effect" warning was the
+  # only evidence that control reached the fit on this path. This asserts
+  # the forward directly, with an element a Weibull refit does read: a
+  # maxit of 2 stops the post-entry refit short, so the replicates change.
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  base <- hazard(survival::Surv(int_dead, dead) ~ 1, data = avc,
+                 dist = "weibull", theta = c(mu = 0.01, nu = 0.5), fit = TRUE)
+  boot <- function(...) {
+    ws <- character()
+    bs <- withCallingHandlers(
+      hzr_bootstrap(base, n_boot = 2, seed = 42, scope = ~ age + mal, ...),
+      warning = function(w) {
+        ws <<- c(ws, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      }
+    )
+    list(bs = bs, warnings = ws)
+  }
+  default <- boot()
+  short <- boot(control = list(maxit = 2L))
+  expect_false(identical(short$bs$replicates, default$bs$replicates))
+  expect_true(any(grepl("refit did not converge", short$warnings)))
+  expect_false(any(grepl("refit did not converge", default$warnings)))
+})
+
+test_that("hzr_bootstrap errors on unused '...' when scope is NULL", {
+  # '...' only has a purpose in select-mode (forwarded to hzr_stepwise());
+  # in fixed-refit mode it must still error on an unrecognized argument, as
+  # it did before '...' was added to the signature for scope=.
+  fit <- .fit_avc_weibull()
+  expect_error(
+    hzr_bootstrap(fit, n_boot = 5, verbsoe = TRUE),
+    "Unused argument"
+  )
+})
+
+test_that("print.hzr_bootstrap reports the mode", {
+  fit <- .fit_avc_weibull()
+  bs_refit <- hzr_bootstrap(fit, n_boot = 5, seed = 42)
+  expect_output(print(bs_refit), "fixed refit")
+
+  data(avc, package = "TemporalHazard")
+  avc <- na.omit(avc)
+  base <- hazard(
+    survival::Surv(int_dead, dead) ~ 1,
+    data  = avc,
+    dist  = "weibull",
+    theta = c(mu = 0.01, nu = 0.5),
+    fit   = TRUE
+  )
+  # Four of these five replicates could not score a candidate: their numeric
+  # information could not be formed, every candidate read `nuisance_singular`,
+  # and the screen stopped untested. This test recorded that with
+  # `n_uncomputable_replicates > 0`. Such candidates are now refitted and
+  # tested by Wald (#570), so no replicate stops untested and each selects.
+  bs_sel <- suppressWarnings(
+    hzr_bootstrap(base, n_boot = 5, seed = 42, scope = ~ age + mal)
+  )
+  expect_output(print(bs_sel), "stepwise selection")
+  expect_identical(bs_sel$n_success, 5L)
+  expect_identical(bs_sel$n_uncomputable_replicates, 0L)
+  selected <- bs_sel$summary[bs_sel$summary$parameter %in% c("age", "mal"), ]
+  expect_identical(nrow(selected), 2L)
+  expect_true(all(selected$n == bs_sel$n_success))
+})
+
 
 # =========================================================================
 # hzr_competing_risks tests
@@ -847,4 +1195,140 @@ test_that("print.hzr_competing_risks runs without error", {
   time_cr <- pmin(valves_cc$int_dead, valves_cc$int_pve)
   cr <- hzr_competing_risks(time_cr, event_cr)
   expect_output(print(cr), "Competing risks")
+})
+
+
+# Select-mode screens that select nothing -----------------------------------
+
+test_that("hzr_bootstrap warns when a select-mode screen picks no covariate", {
+  # A selection frequency is the whole deliverable of a screen, so "nothing
+  # was ever selected" is the result being empty, not a quiet edge case.
+  # The base model's own parameters appear in every replicate by
+  # construction, so they fill the summary at pct = 100 and the table reads
+  # as a set of perfectly reliable variables.
+  data(avc)
+  phases <- list(
+    early    = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1, fixed = "shapes"),
+    constant = hzr_phase("constant")
+  )
+  fit <- hazard(Surv(int_dead, dead) ~ 1, data = avc, dist = "multiphase",
+                phases = phases, fit = TRUE,
+                control = list(n_starts = 1L, maxit = 500L))
+
+  # An entry criterion no candidate can clear -> a legitimately empty screen.
+  expect_warning(
+    boot <- hzr_bootstrap(fit, n_boot = 3, seed = 1,
+                          scope = list(early = ~ age, constant = ~ age),
+                          criterion = "score", direction = "forward",
+                          slentry = 1e-12, slstay = 1e-12),
+    "no covariate"
+  )
+
+  # The empty screen still reports as fully successful, which is exactly why
+  # the warning has to carry the news.
+  expect_equal(boot$n_failed, 0L)
+  expect_length(setdiff(unique(boot$replicates$parameter), names(coef(fit))), 0L)
+})
+
+test_that("a single-distribution select-mode screen that picks nothing warns too", {
+  # coef() of a single-distribution fit has no names, while the replicates
+  # name its shape parameters param_1, param_2. Compared against coef(), both
+  # read as selected covariates, so the warning never fired and the summary
+  # showed only the base parameters at pct = 100 with no word of why.
+  d <- stats::na.omit(avc[, c("int_dead", "dead", "age")])
+  fit <- hazard(Surv(int_dead, dead) ~ 1, data = d, dist = "weibull",
+                theta = c(0.1, 1), fit = TRUE)
+  expect_warning(
+    boot <- hzr_bootstrap(fit, n_boot = 3, seed = 1, scope = ~ age,
+                          criterion = "wald", slentry = 1e-300),
+    "selected no covariate in any of the 3 successful replicates",
+    fixed = TRUE
+  )
+  expect_equal(boot$n_success, 3L)
+  expect_setequal(boot$summary$parameter, c("param_1", "param_2"))
+})
+
+test_that("a single-distribution screen that selects a covariate does not warn", {
+  d <- stats::na.omit(avc[, c("int_dead", "dead", "age")])
+  fit <- hazard(Surv(int_dead, dead) ~ 1, data = d, dist = "weibull",
+                theta = c(0.1, 1), fit = TRUE)
+  w <- character()
+  boot <- withCallingHandlers(
+    hzr_bootstrap(fit, n_boot = 3, seed = 1, scope = ~ age,
+                  criterion = "wald", slentry = 0.99),
+    warning = function(e) {
+      w <<- c(w, conditionMessage(e))
+      invokeRestart("muffleWarning")
+    }
+  )
+  expect_true("age" %in% boot$summary$parameter)
+  expect_false(any(grepl("selected no covariate", w, fixed = TRUE)))
+})
+
+test_that("hzr_bootstrap does not warn when a screen does select covariates", {
+  data(avc)
+  phases <- list(
+    early    = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1, fixed = "shapes"),
+    constant = hzr_phase("constant")
+  )
+  fit <- hazard(Surv(int_dead, dead) ~ 1, data = avc, dist = "multiphase",
+                phases = phases, fit = TRUE,
+                control = list(n_starts = 1L, maxit = 500L))
+
+  expect_no_warning(
+    boot <- hzr_bootstrap(fit, n_boot = 3, seed = 1,
+                          scope = list(early = ~ age, constant = ~ age),
+                          criterion = "score", direction = "forward",
+                          slentry = 0.5, slstay = 0.5)
+  )
+  expect_gt(length(setdiff(unique(boot$replicates$parameter),
+                           names(coef(fit)))), 0L)
+})
+
+
+test_that("hzr_bootstrap reports replicates whose scores were uncomputable", {
+  # hzr_bootstrap() deliberately wraps each replicate in suppressWarnings(),
+  # so the step-level warning is invisible here -- exactly the mode where a
+  # silently-unscoreable candidate matters most, since a replicate that
+  # could not test anything still counts toward n_success and drags every
+  # selection frequency down.  The count therefore has to be aggregated off
+  # the returned objects rather than left to a warning.
+  data(avc)
+  avc$constcol <- 1.0     # numeric, present, and degenerate -> Q is NA
+  phases <- list(
+    early    = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1, fixed = "shapes"),
+    constant = hzr_phase("constant")
+  )
+  fit <- hazard(Surv(int_dead, dead) ~ 1, data = avc, dist = "multiphase",
+                phases = phases, fit = TRUE,
+                control = list(n_starts = 1L, maxit = 400L))
+
+  w <- testthat::capture_warnings(
+    boot <- hzr_bootstrap(fit, n_boot = 3, seed = 1,
+                          scope = list(early = ~ constcol),
+                          criterion = "score", direction = "forward",
+                          slentry = 0.5, slstay = 0.5)
+  )
+
+  expect_true(any(grepl("score statistic", w)))
+  expect_equal(boot$n_uncomputable_replicates, boot$n_success)
+  expect_gt(boot$n_uncomputable_replicates, 0L)
+})
+
+test_that("a healthy screen reports zero uncomputable replicates", {
+  data(avc)
+  phases <- list(
+    early    = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1, fixed = "shapes"),
+    constant = hzr_phase("constant")
+  )
+  fit <- hazard(Surv(int_dead, dead) ~ 1, data = avc, dist = "multiphase",
+                phases = phases, fit = TRUE,
+                control = list(n_starts = 1L, maxit = 400L))
+
+  boot <- hzr_bootstrap(fit, n_boot = 3, seed = 1,
+                        scope = list(early = ~ age, constant = ~ age),
+                        criterion = "score", direction = "forward",
+                        slentry = 0.5, slstay = 0.5)
+
+  expect_equal(boot$n_uncomputable_replicates, 0L)
 })

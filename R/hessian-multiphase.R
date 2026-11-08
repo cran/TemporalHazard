@@ -21,7 +21,10 @@ NULL
 #' Computes the six unique mixed second partial derivatives of
 #' \eqn{\Phi_j(t)} (cumulative shape) and \eqn{\phi_j(t)} (instantaneous
 #' shape) with respect to the internal shape parameters
-#' \eqn{\{log\_t\_half, \nu, m\}} via second-order central differences.
+#' \eqn{\{log\_t\_half, \nu, m\}} via second-order central differences,
+#' except where a stencil would cross into an undefined region or reach
+#' across \eqn{m = 0}: there it steps one-sided, forward from \eqn{m \ge 0}
+#' and backward from \eqn{m < 0}.
 #'
 #' This is the second-derivative analogue of \code{.hzr_phase_derivatives()}.
 #'
@@ -44,57 +47,151 @@ NULL
 
   d00 <- eval_at(t_half, nu, m)
 
+  # hzr_decompos() rejects m < 0 && nu < 0 as mathematically undefined. A
+  # fixed shape sitting exactly at m = 0 (nu < 0, Case 3L) or nu = 0 (m < 0,
+  # Case 2L) is a valid, documented limiting case, but the central-difference
+  # step below would probe the OTHER parameter's -h side, which crosses into
+  # that undefined region. Detect it and fall back to a forward-only
+  # (one-sided) difference in just that one direction; every other
+  # direction/pair keeps the ordinary central-difference formula.
+  #
+  # m's stencil must not reach across m = 0 whatever the sign of nu, either:
+  # hzr_decompos() changes formula there, and the m < 0 family meets the
+  # m >= 0 one in a cusp, so a central difference mixes two branches. It put
+  # -4.8e5 on the m diagonal at m = 5e-6, where the value is O(1). m_dir is
+  # the side the one-sided stencil steps to: forward from m >= 0, backward
+  # from m < 0. Backward steps of h cannot resolve the cusp when |m| << h;
+  # they only stop the two branches being mixed. The two conditions hold
+  # together only for m just below 0 with nu in [0, h), where the nu / m
+  # cross term steps one-sided in both.
+  # Inclusive below, as in the gradient (`m + h_m >= 0`): at m = -h exactly a
+  # central stencil would put m + h on 0 itself, the m >= 0 family.
+  m_dir <- if (m >= 0 && m < h) 1 else if (m < 0 && m >= -h) -1 else 0
+  m_boundary  <- m_dir != 0
+  nu_boundary <- m  < 0 && abs(nu) < h
+
   # Perturbed values on each internal scale:
   #   log_t_half: steps are multiplicative -> t_half * exp(+/-h)
   #   nu, m:      additive steps
   t_p  <- t_half * exp(h)
   t_m  <- t_half * exp(-h)
   nu_p <- nu + h
-  nu_m <- nu - h
-  m_p  <- m  + h
-  m_m  <- m  - h
+  nu_m <- if (nu_boundary) NA_real_ else nu - h
+  # Under m_boundary, m_p is the near point on the m_dir side.
+  m_p  <- if (m_boundary) m + m_dir * h else m + h
+  m_m  <- if (m_boundary)  NA_real_ else m  - h
 
   # Six single-parameter perturbations for diagonal second differences
+  # (skip the -h evaluation in a boundary direction -- it would error)
   d_tp  <- eval_at(t_p,    nu,   m)
   d_tm  <- eval_at(t_m,    nu,   m)
   d_np  <- eval_at(t_half, nu_p, m)
-  d_nm  <- eval_at(t_half, nu_m, m)
+  d_nm  <- if (nu_boundary) NULL else eval_at(t_half, nu_m, m)
   d_mp  <- eval_at(t_half, nu,   m_p)
-  d_mm  <- eval_at(t_half, nu,   m_m)
+  d_mm  <- if (m_boundary)  NULL else eval_at(t_half, nu,   m_m)
 
   h2 <- h * h
 
-  # Diagonal second differences
-  d2Phi_tt  <- (d_tp$Phi - 2 * d00$Phi + d_tm$Phi) / h2
-  d2Phi_nn  <- (d_np$Phi - 2 * d00$Phi + d_nm$Phi) / h2
-  d2Phi_mm_ <- (d_mp$Phi - 2 * d00$Phi + d_mm$Phi) / h2
-  d2phi_tt  <- (d_tp$phi - 2 * d00$phi + d_tm$phi) / h2
-  d2phi_nn  <- (d_np$phi - 2 * d00$phi + d_nm$phi) / h2
-  d2phi_mm_ <- (d_mp$phi - 2 * d00$phi + d_mm$phi) / h2
+  # Diagonal second differences. At a boundary, use the one-sided second
+  # difference (f(x+2sh) - 2f(x+sh) + f(x)) / h^2, s = +1 except for a
+  # backward step in m (s = m_dir) -- valid but O(h) rather than O(h^2)
+  # locally, and used only at the boundaries above.
+  d2Phi_tt <- (d_tp$Phi - 2 * d00$Phi + d_tm$Phi) / h2
+  d2phi_tt <- (d_tp$phi - 2 * d00$phi + d_tm$phi) / h2
 
-  # t_half / nu cross: corners (t_p, nu_p), (t_p, nu_m), (t_m, nu_p), (t_m, nu_m)
-  e_tn_pp <- eval_at(t_p, nu_p, m)
-  e_tn_pm <- eval_at(t_p, nu_m, m)
-  e_tn_mp <- eval_at(t_m, nu_p, m)
-  e_tn_mm <- eval_at(t_m, nu_m, m)
-  d2_tn_Phi <- (e_tn_pp$Phi - e_tn_pm$Phi - e_tn_mp$Phi + e_tn_mm$Phi) / (4 * h2)
-  d2_tn_phi <- (e_tn_pp$phi - e_tn_pm$phi - e_tn_mp$phi + e_tn_mm$phi) / (4 * h2)
+  if (nu_boundary) {
+    d_np2 <- eval_at(t_half, nu + 2 * h, m)
+    d2Phi_nn <- (d_np2$Phi - 2 * d_np$Phi + d00$Phi) / h2
+    d2phi_nn <- (d_np2$phi - 2 * d_np$phi + d00$phi) / h2
+  } else {
+    d2Phi_nn <- (d_np$Phi - 2 * d00$Phi + d_nm$Phi) / h2
+    d2phi_nn <- (d_np$phi - 2 * d00$phi + d_nm$phi) / h2
+  }
 
-  # t_half / m cross
-  e_tm_pp <- eval_at(t_p, nu, m_p)
-  e_tm_pm <- eval_at(t_p, nu, m_m)
-  e_tm_mp <- eval_at(t_m, nu, m_p)
-  e_tm_mm <- eval_at(t_m, nu, m_m)
-  d2_tm_Phi <- (e_tm_pp$Phi - e_tm_pm$Phi - e_tm_mp$Phi + e_tm_mm$Phi) / (4 * h2)
-  d2_tm_phi <- (e_tm_pp$phi - e_tm_pm$phi - e_tm_mp$phi + e_tm_mm$phi) / (4 * h2)
+  if (m_boundary) {
+    d_mp2 <- eval_at(t_half, nu, m + 2 * m_dir * h)
+    d2Phi_mm_ <- (d_mp2$Phi - 2 * d_mp$Phi + d00$Phi) / h2
+    d2phi_mm_ <- (d_mp2$phi - 2 * d_mp$phi + d00$phi) / h2
+  } else {
+    d2Phi_mm_ <- (d_mp$Phi - 2 * d00$Phi + d_mm$Phi) / h2
+    d2phi_mm_ <- (d_mp$phi - 2 * d00$phi + d_mm$phi) / h2
+  }
 
-  # nu / m cross
-  e_nm_pp <- eval_at(t_half, nu_p, m_p)
-  e_nm_pm <- eval_at(t_half, nu_p, m_m)
-  e_nm_mp <- eval_at(t_half, nu_m, m_p)
-  e_nm_mm <- eval_at(t_half, nu_m, m_m)
-  d2_nm_Phi <- (e_nm_pp$Phi - e_nm_pm$Phi - e_nm_mp$Phi + e_nm_mm$Phi) / (4 * h2)
-  d2_nm_phi <- (e_nm_pp$phi - e_nm_pm$phi - e_nm_mp$phi + e_nm_mm$phi) / (4 * h2)
+  # t_half / nu cross: corners (t_p, nu_p), (t_p, nu_m), (t_m, nu_p), (t_m, nu_m).
+  # Under nu_boundary, use forward-in-nu / central-in-t_half instead (drops
+  # the nu_m corners).
+  if (nu_boundary) {
+    # d_tp/d_tm (= eval_at(t_p/t_m, nu, m)) already computed above
+    e_tn_pp <- eval_at(t_p, nu_p, m)
+    e_tn_mp <- eval_at(t_m, nu_p, m)
+    d2_tn_Phi <- ((e_tn_pp$Phi - d_tp$Phi) -
+                    (e_tn_mp$Phi - d_tm$Phi)) / (2 * h2)
+    d2_tn_phi <- ((e_tn_pp$phi - d_tp$phi) -
+                    (e_tn_mp$phi - d_tm$phi)) / (2 * h2)
+  } else {
+    e_tn_pp <- eval_at(t_p, nu_p, m)
+    e_tn_pm <- eval_at(t_p, nu_m, m)
+    e_tn_mp <- eval_at(t_m, nu_p, m)
+    e_tn_mm <- eval_at(t_m, nu_m, m)
+    d2_tn_Phi <- (e_tn_pp$Phi - e_tn_pm$Phi - e_tn_mp$Phi + e_tn_mm$Phi) / (4 * h2)
+    d2_tn_phi <- (e_tn_pp$phi - e_tn_pm$phi - e_tn_mp$phi + e_tn_mm$phi) / (4 * h2)
+  }
+
+  # t_half / m cross: corners (t_p, m_p), (t_p, m_m), (t_m, m_p), (t_m, m_m).
+  # Under m_boundary, use one-sided-in-m (toward m_dir) / central-in-t_half
+  # instead (drops the m_m corners); m_dir restores the sign of a backward
+  # step.
+  if (m_boundary) {
+    # d_tp/d_tm (= eval_at(t_p/t_m, nu, m)) already computed above
+    e_tm_pp <- eval_at(t_p, nu, m_p)
+    e_tm_mp <- eval_at(t_m, nu, m_p)
+    d2_tm_Phi <- m_dir * ((e_tm_pp$Phi - d_tp$Phi) -
+                            (e_tm_mp$Phi - d_tm$Phi)) / (2 * h2)
+    d2_tm_phi <- m_dir * ((e_tm_pp$phi - d_tp$phi) -
+                            (e_tm_mp$phi - d_tm$phi)) / (2 * h2)
+  } else {
+    e_tm_pp <- eval_at(t_p, nu, m_p)
+    e_tm_pm <- eval_at(t_p, nu, m_m)
+    e_tm_mp <- eval_at(t_m, nu, m_p)
+    e_tm_mm <- eval_at(t_m, nu, m_m)
+    d2_tm_Phi <- (e_tm_pp$Phi - e_tm_pm$Phi - e_tm_mp$Phi + e_tm_mm$Phi) / (4 * h2)
+    d2_tm_phi <- (e_tm_pp$phi - e_tm_pm$phi - e_tm_mp$phi + e_tm_mm$phi) / (4 * h2)
+  }
+
+  # nu / m cross: corners (nu_p, m_p), (nu_p, m_m), (nu_m, m_p), (nu_m, m_m).
+  # Under m_boundary, use one-sided-in-m (toward m_dir) / central-in-nu (nu_m
+  # is valid here -- only m is boundary-restricted). Under nu_boundary, use
+  # forward-in-nu /
+  # central-in-m (m_m is valid here -- only nu is boundary-restricted). Under
+  # both, step one-sided in each: forward in nu, toward m_dir in m.
+  if (m_boundary && nu_boundary) {
+    e_nm_pp <- eval_at(t_half, nu_p, m_p)
+    d2_nm_Phi <- m_dir * (e_nm_pp$Phi - d_np$Phi - d_mp$Phi + d00$Phi) / h2
+    d2_nm_phi <- m_dir * (e_nm_pp$phi - d_np$phi - d_mp$phi + d00$phi) / h2
+  } else if (m_boundary) {
+    # d_np/d_nm (= eval_at(t_half, nu_p/nu_m, m)) already computed above
+    e_nm_pp <- eval_at(t_half, nu_p, m_p)
+    e_nm_mp <- eval_at(t_half, nu_m, m_p)
+    d2_nm_Phi <- m_dir * ((e_nm_pp$Phi - d_np$Phi) -
+                            (e_nm_mp$Phi - d_nm$Phi)) / (2 * h2)
+    d2_nm_phi <- m_dir * ((e_nm_pp$phi - d_np$phi) -
+                            (e_nm_mp$phi - d_nm$phi)) / (2 * h2)
+  } else if (nu_boundary) {
+    # d_mp/d_mm (= eval_at(t_half, nu, m_p/m_m)) already computed above
+    e_nm_pp <- eval_at(t_half, nu_p, m_p)
+    e_nm_pm <- eval_at(t_half, nu_p, m_m)
+    d2_nm_Phi <- ((e_nm_pp$Phi - d_mp$Phi) -
+                    (e_nm_pm$Phi - d_mm$Phi)) / (2 * h2)
+    d2_nm_phi <- ((e_nm_pp$phi - d_mp$phi) -
+                    (e_nm_pm$phi - d_mm$phi)) / (2 * h2)
+  } else {
+    e_nm_pp <- eval_at(t_half, nu_p, m_p)
+    e_nm_pm <- eval_at(t_half, nu_p, m_m)
+    e_nm_mp <- eval_at(t_half, nu_m, m_p)
+    e_nm_mm <- eval_at(t_half, nu_m, m_m)
+    d2_nm_Phi <- (e_nm_pp$Phi - e_nm_pm$Phi - e_nm_mp$Phi + e_nm_mm$Phi) / (4 * h2)
+    d2_nm_phi <- (e_nm_pp$phi - e_nm_pm$phi - e_nm_mp$phi + e_nm_mm$phi) / (4 * h2)
+  }
 
   list(
     d2Phi_dlog_thalf2    = d2Phi_tt,
@@ -127,8 +224,6 @@ NULL
 #'   unique pairs from \code{\{log\_tau, gamma, alpha, eta\}}.
 #' @noRd
 .hzr_g3_phase_second_derivatives <- function(time, tau, gamma, alpha, eta) {
-  h <- .hzr_h2
-
   eval_at <- function(tau_p, gam_p, alp_p, eta_p) {
     # Guard against non-positive G3 parameters
     if (tau_p <= 0 || gam_p <= 0 || eta_p <= 0) return(NULL)
@@ -159,15 +254,26 @@ NULL
     return(setNames(replicate(length(nms), zeros, simplify = FALSE), nms))
   }
 
+  # Each shape is stepped in proportion to itself (#332). A fixed step of
+  # h ~ 1.2e-4 moves gamma = 220 by 5e-7 of itself, where rounding swamps a
+  # second difference, and moves eta = 0.009 or alpha = 0.02 by about 1%,
+  # where truncation does. log_tau is already on a log scale. alpha may be
+  # 0 (the exponential limit), which keeps the additive step.
+  h <- .hzr_h2
+  h_t <- h
+  h_g <- h * gamma
+  h_a <- if (alpha > 0) h * alpha else h
+  h_e <- h * eta
+
   # Perturbed values: log_tau, gamma, alpha, eta steps
-  tau_p <- tau * exp(h)
-  tau_m <- tau * exp(-h)
-  gam_p <- gamma + h
-  gam_m <- gamma - h
-  alp_p <- alpha + h
-  alp_m <- alpha - h
-  eta_p <- eta   + h
-  eta_m <- eta   - h
+  tau_p <- tau * exp(h_t)
+  tau_m <- tau * exp(-h_t)
+  gam_p <- gamma + h_g
+  gam_m <- gamma - h_g
+  alp_p <- alpha + h_a
+  alp_m <- alpha - h_a
+  eta_p <- eta   + h_e
+  eta_m <- eta   - h_e
 
   # Fallback to d00 if perturbed eval returns NULL
   safe_eval <- function(tau_v, gam_v, alp_v, eta_v) {
@@ -184,11 +290,9 @@ NULL
   d_Ep <- safe_eval(tau, gamma, alpha, eta_p)
   d_Em <- safe_eval(tau, gamma, alpha, eta_m)
 
-  h2 <- h * h
-
   # Diagonal second differences
-  diag2 <- function(dp, dm, d0, which) {
-    (dp[[which]] - 2 * d0[[which]] + dm[[which]]) / h2
+  diag2 <- function(dp, dm, d0, which, step) {
+    (dp[[which]] - 2 * d0[[which]] + dm[[which]]) / step^2
   }
 
   # tau / gamma
@@ -196,54 +300,54 @@ NULL
   d_TpGm <- safe_eval(tau_p, gam_m, alpha, eta)
   d_TmGp <- safe_eval(tau_m, gam_p, alpha, eta)
   d_TmGm <- safe_eval(tau_m, gam_m, alpha, eta)
-  TG_Phi <- (d_TpGp$Phi - d_TpGm$Phi - d_TmGp$Phi + d_TmGm$Phi) / (4 * h2)
-  TG_phi <- (d_TpGp$phi - d_TpGm$phi - d_TmGp$phi + d_TmGm$phi) / (4 * h2)
+  TG_Phi <- (d_TpGp$Phi - d_TpGm$Phi - d_TmGp$Phi + d_TmGm$Phi) / (4 * h_t * h_g)
+  TG_phi <- (d_TpGp$phi - d_TpGm$phi - d_TmGp$phi + d_TmGm$phi) / (4 * h_t * h_g)
 
   # tau / alpha
   d_TpAp <- safe_eval(tau_p, gamma, alp_p, eta)
   d_TpAm <- safe_eval(tau_p, gamma, alp_m, eta)
   d_TmAp <- safe_eval(tau_m, gamma, alp_p, eta)
   d_TmAm <- safe_eval(tau_m, gamma, alp_m, eta)
-  TA_Phi <- (d_TpAp$Phi - d_TpAm$Phi - d_TmAp$Phi + d_TmAm$Phi) / (4 * h2)
-  TA_phi <- (d_TpAp$phi - d_TpAm$phi - d_TmAp$phi + d_TmAm$phi) / (4 * h2)
+  TA_Phi <- (d_TpAp$Phi - d_TpAm$Phi - d_TmAp$Phi + d_TmAm$Phi) / (4 * h_t * h_a)
+  TA_phi <- (d_TpAp$phi - d_TpAm$phi - d_TmAp$phi + d_TmAm$phi) / (4 * h_t * h_a)
 
   # tau / eta
   d_TpEp <- safe_eval(tau_p, gamma, alpha, eta_p)
   d_TpEm <- safe_eval(tau_p, gamma, alpha, eta_m)
   d_TmEp <- safe_eval(tau_m, gamma, alpha, eta_p)
   d_TmEm <- safe_eval(tau_m, gamma, alpha, eta_m)
-  TE_Phi <- (d_TpEp$Phi - d_TpEm$Phi - d_TmEp$Phi + d_TmEm$Phi) / (4 * h2)
-  TE_phi <- (d_TpEp$phi - d_TpEm$phi - d_TmEp$phi + d_TmEm$phi) / (4 * h2)
+  TE_Phi <- (d_TpEp$Phi - d_TpEm$Phi - d_TmEp$Phi + d_TmEm$Phi) / (4 * h_t * h_e)
+  TE_phi <- (d_TpEp$phi - d_TpEm$phi - d_TmEp$phi + d_TmEm$phi) / (4 * h_t * h_e)
 
   # gamma / alpha
   d_GpAp <- safe_eval(tau, gam_p, alp_p, eta)
   d_GpAm <- safe_eval(tau, gam_p, alp_m, eta)
   d_GmAp <- safe_eval(tau, gam_m, alp_p, eta)
   d_GmAm <- safe_eval(tau, gam_m, alp_m, eta)
-  GA_Phi <- (d_GpAp$Phi - d_GpAm$Phi - d_GmAp$Phi + d_GmAm$Phi) / (4 * h2)
-  GA_phi <- (d_GpAp$phi - d_GpAm$phi - d_GmAp$phi + d_GmAm$phi) / (4 * h2)
+  GA_Phi <- (d_GpAp$Phi - d_GpAm$Phi - d_GmAp$Phi + d_GmAm$Phi) / (4 * h_g * h_a)
+  GA_phi <- (d_GpAp$phi - d_GpAm$phi - d_GmAp$phi + d_GmAm$phi) / (4 * h_g * h_a)
 
   # gamma / eta
   d_GpEp <- safe_eval(tau, gam_p, alpha, eta_p)
   d_GpEm <- safe_eval(tau, gam_p, alpha, eta_m)
   d_GmEp <- safe_eval(tau, gam_m, alpha, eta_p)
   d_GmEm <- safe_eval(tau, gam_m, alpha, eta_m)
-  GE_Phi <- (d_GpEp$Phi - d_GpEm$Phi - d_GmEp$Phi + d_GmEm$Phi) / (4 * h2)
-  GE_phi <- (d_GpEp$phi - d_GpEm$phi - d_GmEp$phi + d_GmEm$phi) / (4 * h2)
+  GE_Phi <- (d_GpEp$Phi - d_GpEm$Phi - d_GmEp$Phi + d_GmEm$Phi) / (4 * h_g * h_e)
+  GE_phi <- (d_GpEp$phi - d_GpEm$phi - d_GmEp$phi + d_GmEm$phi) / (4 * h_g * h_e)
 
   # alpha / eta
   d_ApEp <- safe_eval(tau, gamma, alp_p, eta_p)
   d_ApEm <- safe_eval(tau, gamma, alp_p, eta_m)
   d_AmEp <- safe_eval(tau, gamma, alp_m, eta_p)
   d_AmEm <- safe_eval(tau, gamma, alp_m, eta_m)
-  AE_Phi <- (d_ApEp$Phi - d_ApEm$Phi - d_AmEp$Phi + d_AmEm$Phi) / (4 * h2)
-  AE_phi <- (d_ApEp$phi - d_ApEm$phi - d_AmEp$phi + d_AmEm$phi) / (4 * h2)
+  AE_Phi <- (d_ApEp$Phi - d_ApEm$Phi - d_AmEp$Phi + d_AmEm$Phi) / (4 * h_a * h_e)
+  AE_phi <- (d_ApEp$phi - d_ApEm$phi - d_AmEp$phi + d_AmEm$phi) / (4 * h_a * h_e)
 
   list(
-    d2Phi_dlog_tau2        = diag2(d_Tp, d_Tm, d00, "Phi"),
-    d2Phi_dgamma2          = diag2(d_Gp, d_Gm, d00, "Phi"),
-    d2Phi_dalpha2          = diag2(d_Ap, d_Am, d00, "Phi"),
-    d2Phi_deta2            = diag2(d_Ep, d_Em, d00, "Phi"),
+    d2Phi_dlog_tau2        = diag2(d_Tp, d_Tm, d00, "Phi", h_t),
+    d2Phi_dgamma2          = diag2(d_Gp, d_Gm, d00, "Phi", h_g),
+    d2Phi_dalpha2          = diag2(d_Ap, d_Am, d00, "Phi", h_a),
+    d2Phi_deta2            = diag2(d_Ep, d_Em, d00, "Phi", h_e),
     d2Phi_dlog_tau_dgamma  = TG_Phi,
     d2Phi_dlog_tau_dalpha  = TA_Phi,
     d2Phi_dlog_tau_deta    = TE_Phi,
@@ -251,10 +355,10 @@ NULL
     d2Phi_dgamma_deta      = GE_Phi,
     d2Phi_dalpha_deta      = AE_Phi,
 
-    d2phi_dlog_tau2        = diag2(d_Tp, d_Tm, d00, "phi"),
-    d2phi_dgamma2          = diag2(d_Gp, d_Gm, d00, "phi"),
-    d2phi_dalpha2          = diag2(d_Ap, d_Am, d00, "phi"),
-    d2phi_deta2            = diag2(d_Ep, d_Em, d00, "phi"),
+    d2phi_dlog_tau2        = diag2(d_Tp, d_Tm, d00, "phi", h_t),
+    d2phi_dgamma2          = diag2(d_Gp, d_Gm, d00, "phi", h_g),
+    d2phi_dalpha2          = diag2(d_Ap, d_Am, d00, "phi", h_a),
+    d2phi_deta2            = diag2(d_Ep, d_Em, d00, "phi", h_e),
     d2phi_dlog_tau_dgamma  = TG_phi,
     d2phi_dlog_tau_dalpha  = TA_phi,
     d2phi_dlog_tau_deta    = TE_phi,
@@ -272,8 +376,8 @@ NULL
 #' Returns the \eqn{p \times p} Hessian of the **objective** (negative
 #' log-likelihood) on the internal parameter scale, matching
 #' \code{numDeriv::hessian(objective)}.  Coverage: event + right-censored
-#' rows, with counting-process start-time corrections when
-#' \code{time_lower > 0}. Returns \code{NULL} for data containing
+#' rows, with counting-process start-time corrections on status 0/1 rows
+#' where \code{0 < time_lower < time}. Returns \code{NULL} for data containing
 #' left-censored (\code{status == -1}) or interval-censored
 #' (\code{status == 2}) rows; the caller falls back to numDeriv in that case.
 #'
@@ -302,16 +406,15 @@ NULL
   n_e       <- length(idx_event)
 
   # Counting-process start-time handling (mirrors gradient)
-  need_start <- !is.null(time_lower) &&
-                any(time_lower > 0 & time_lower < time & status %in% c(0L, 1L))
-  start_vec <- if (need_start) {
-    sv <- rep(0, n)
-    epoch_idx <- status %in% c(0L, 1L) & time_lower < time
-    sv[epoch_idx] <- time_lower[epoch_idx]
-    sv
-  } else {
-    NULL
-  }
+  # The start time must be defined EXACTLY as the log-likelihood defines it,
+  # so it comes from the same helper, `.hzr_multiphase_entry()`: the entry is
+  # `time_lower` on a status 0/1 row with 0 < time_lower < time, and 0
+  # otherwise (issue #253). Differentiating a different function from the one
+  # being evaluated sent the optimizer off a cliff (issue #136). The `> 0` test
+  # is only a skip: H(0) = 0, so a zero entry contributes nothing.
+  entry <- .hzr_multiphase_entry(time, status, time_lower)
+  need_start <- !is.null(entry) && any(entry > 0)
+  start_vec <- if (need_start) entry else NULL
 
   theta_split <- .hzr_split_theta(theta, phases, covariate_counts)
 

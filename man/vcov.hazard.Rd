@@ -20,16 +20,22 @@ and columns for parameters held fixed (e.g. fixed shape parameters) are
 is still usable. For Conservation-of-Events fits the conserved phase
 \code{log_mu} \emph{normally} carries a variance: it is removed from the
 optimizer search but the vcov is the full-information matrix at the optimum
-(the CoE solution is the unconstrained MLE). That recomputation requires
-\pkg{numDeriv} and an invertible Hessian; if either is unavailable the fit
-emits a warning and the conserved \code{log_mu} stays \code{NA} (the rest
-of the matrix is unaffected). Returns a scalar \code{NA} only when the
+(the CoE solution is the unconstrained MLE). That recomputation needs a
+Hessian (analytic, or from \pkg{numDeriv} for left- or interval-censored
+rows) that can be inverted; if it fails the fit warns, records why in
+\code{degraded_causes}, and has no covariance matrix, so \code{vcov()}
+returns \code{NA}. For a Weibull fit whose scale \code{mu}, or
+its variance, cannot be represented, \code{mu}'s row and column are
+\code{NA}, the reason is recorded in the fit's \code{degraded_causes},
+and \code{summary()} shows the variance of \code{log(mu)} instead.
+Returns a scalar \code{NA} only when the
 model has not been fitted or no covariance matrix is available.
 }
 \description{
 Returns the estimated variance-covariance matrix of the fitted coefficients.
 }
 \examples{
+set.seed(1)
 fit <- hazard(time = rexp(30, 0.5), status = rep(1L, 30),
               theta = c(0.3, 1.0), dist = "weibull", fit = TRUE)
 vcov(fit)

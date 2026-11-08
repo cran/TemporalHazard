@@ -15,6 +15,7 @@
   phases,
   covariate_counts,
   x_list,
+  objective = c("likelihood", "sas"),
   return_gradient = FALSE,
   return_hessian = FALSE,
   ...
@@ -28,7 +29,11 @@
 \item{status}{Numeric event indicator: 1 = event, 0 = right-censored,
 -1 = left-censored, 2 = interval-censored.}
 
-\item{time_lower}{Optional lower bounds for interval censoring.}
+\item{time_lower}{Optional numeric vector: the interval lower bound on
+status-2 rows, and the counting-process entry time on status 0/1 rows
+with \verb{0 < time_lower < time}. \code{time_lower == time} on a status 0/1 row
+means no entry (the mixed-interval layout); see
+\code{.hzr_multiphase_entry()}.}
 
 \item{time_upper}{Optional upper bounds for left/interval censoring.}
 
@@ -39,6 +44,10 @@
 \item{covariate_counts}{Named integer vector of per-phase covariate counts.}
 
 \item{x_list}{Named list of per-phase design matrices.}
+
+\item{objective}{Which interval-censored contribution to accumulate;
+see \code{.hzr_logl_interval()}. Exact-event, right-censored and left-censored
+rows are unaffected.}
 
 \item{return_gradient}{Logical (ignored; gradient via separate function).}
 

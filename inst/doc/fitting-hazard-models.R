@@ -1,7 +1,15 @@
 ## -----------------------------------------------------------------------------
 #| include: false
+# R CMD build installs the package into R_BUILD_TEMPLIB. A build launched
+# through callr (rcmdcheck, devtools) passes Quarto's R session a profile
+# that resets .libPaths() without it, and every chunk skipped (#276).
+templib <- Sys.getenv("R_BUILD_TEMPLIB")
+if (dir.exists(templib)) .libPaths(c(templib, .libPaths()))
 has_pkg <- requireNamespace("TemporalHazard", quietly = TRUE) &&
   requireNamespace("ggplot2", quietly = TRUE)
+# On CI a package that cannot load must fail the build, not skip every
+# chunk and pass over nothing (#276). loadNamespace() says why it failed.
+if (nzchar(Sys.getenv("CI"))) for (p in c("TemporalHazard", "ggplot2")) loadNamespace(p)
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment  = "#>",
@@ -266,7 +274,7 @@ c(mu = round(mu_hat, 4), nu = round(nu_hat, 4))
 
 ## -----------------------------------------------------------------------------
 #| label: fig-cumhaz-shape
-#| fig-cap: "Nelson-Aalen cumulative hazard for CABGKUL — three-phase shape visible as two kinks"
+#| fig-cap: "Nelson-Aalen cumulative hazard for CABGKUL: three-phase shape visible as two kinks"
 #| fig-width: 7
 #| fig-height: 4
 ggplot(data.frame(time = nel$time, cumhaz = nel$cumhaz),
@@ -278,7 +286,6 @@ ggplot(data.frame(time = nel$time, cumhaz = nel$cumhaz),
 
 ## -----------------------------------------------------------------------------
 #| label: overparameterized
-set.seed(42)
 fit_3ph <- hazard(
   Surv(int_dead, dead) ~ 1,
   data   = avc,
@@ -287,20 +294,20 @@ fit_3ph <- hazard(
     early    = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1,
                           fixed = "shapes"),
     constant = hzr_phase("constant"),
-    late     = hzr_phase("g3", tau = 5, gamma = 3, alpha = 1, eta = 1,
+    late     = hzr_phase("g3", tau = 1, gamma = 3, alpha = 1, eta = 1,
                           fixed = "shapes")
   ),
   fit = TRUE, control = list(n_starts = 5, maxit = 1000)
 )
 
-# Scale magnitudes: exp(log_mu) ≈ 0 for any phase the data doesn't support
+# Scale magnitudes. A tiny exp(log_mu) does not by itself mark an unneeded
+# phase; judge each phase by its contribution, from predict(..., decompose = TRUE)
 log_mu_idx <- grep("log_mu", names(coef(fit_3ph)))
 round(exp(coef(fit_3ph)[log_mu_idx]), 6)
 
 
 ## -----------------------------------------------------------------------------
 #| label: nstarts
-set.seed(42)
 fit_robust <- hazard(
   Surv(int_dead, dead) ~ 1,
   data   = avc,

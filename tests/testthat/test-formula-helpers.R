@@ -1,3 +1,7 @@
+# Too slow for the CRAN check time budget; runs on CI and locally.
+# See "Where the check's time actually goes" in AGENTS.md.
+skip_on_cran()
+
 # tests/testthat/test-formula-helpers.R
 # Unit tests for .hzr_parse_formula() covering the four Surv() types it
 # dispatches on (right, left, interval, counting-process) and its error
@@ -43,7 +47,7 @@ test_that("left-censored Surv sets time_upper but not time_lower", {
   )
 
   expect_equal(out$time,       df$t)
-  expect_equal(out$status,     df$d)
+  expect_equal(out$status,     c(1, -1, 1))   # Surv 0 = left-censored -> -1
   expect_null(out$time_lower)
   expect_equal(out$time_upper, df$t)
   expect_null(out$x)
@@ -64,12 +68,80 @@ test_that("interval-censored Surv extracts time_lower + time_upper + status", {
     data = df
   )
 
-  # interval status codes coming out of Surv are 0/1/2/3; the parser
-  # keeps them as-is, just routes lower/upper columns.
+  # Surv codes every row here as 3 (interval); the parser recodes to
+  # TemporalHazard's 2.  Asserting the value matters -- an earlier version
+  # of this test checked `status %in% c(0, 1, 2, 3)`, which is the full set
+  # of codes Surv can emit and so could never fail.
   expect_length(out$time, 3)
   expect_equal(out$time_lower, df$lo)
   expect_equal(out$time_upper, df$hi)
-  expect_true(all(out$status %in% c(0, 1, 2, 3)))
+  expect_equal(out$status, rep(2, 3))
+})
+
+# ---------------------------------------------------------------------------
+# Surv() status codes are not TemporalHazard status codes
+#
+# survival::Surv() and this package disagree on the integer coding, so the
+# parser has to translate rather than pass through:
+#
+#   TemporalHazard   -1 left   0 right   1 event   2 interval
+#   Surv "left"                0 left    1 event
+#   Surv "interval"            0 right   1 event   2 left   3 interval
+#
+# For a non-interval row, Surv stores the status in the `time2` column, so
+# `time2` is a sentinel there and must never be read as an upper bound.
+# ---------------------------------------------------------------------------
+
+test_that("left-censored Surv recodes status 0 to TemporalHazard's -1", {
+  df <- data.frame(
+    t = c(1, 2, 3),
+    d = c(1, 0, 1)   # Surv "left": 1 = event, 0 = left-censored
+  )
+  out <- parse(survival::Surv(t, d, type = "left") ~ 1, data = df)
+
+  expect_equal(out$status, c(1, -1, 1))
+})
+
+test_that("interval Surv recodes all four status codes", {
+  df <- data.frame(
+    lo = c(1, 2, 3, 4),
+    hi = c(NA, NA, NA, 6),
+    ev = c(1, 0, 2, 3)   # event, right-censored, left-censored, interval
+  )
+  out <- parse(survival::Surv(lo, hi, ev, type = "interval") ~ 1, data = df)
+
+  expect_equal(out$status, c(1, 0, -1, 2))
+})
+
+test_that("interval Surv never reads an upper bound from the time2 sentinel", {
+  # Surv writes 1 into time2 for every non-interval row.  Only the genuine
+  # interval row (4, 6) has an upper bound; the rest must fall back to `time`.
+  df <- data.frame(
+    lo = c(1, 2, 3, 4),
+    hi = c(NA, NA, NA, 6),
+    ev = c(1, 0, 2, 3)
+  )
+  out <- parse(survival::Surv(lo, hi, ev, type = "interval") ~ 1, data = df)
+
+  expect_equal(out$time,       c(1, 2, 3, 4))
+  expect_equal(out$time_upper, c(1, 2, 3, 6))
+})
+
+test_that("interval Surv does not left-truncate non-interval rows", {
+  # `time_lower` is overloaded: the interval lower bound when status == 2,
+  # but the counting-process entry time when status is 0 or 1, where the
+  # likelihood forms H(stop) - H(start).  Surv "interval" carries no
+  # truncation, so entry time is 0 for every non-interval row -- setting it
+  # to the observed time instead would cancel those rows out of the
+  # likelihood entirely.
+  df <- data.frame(
+    lo = c(1, 2, 3, 4),
+    hi = c(NA, NA, NA, 6),
+    ev = c(1, 0, 2, 3)
+  )
+  out <- parse(survival::Surv(lo, hi, ev, type = "interval") ~ 1, data = df)
+
+  expect_equal(out$time_lower, c(0, 0, 0, 4))
 })
 
 # ---------------------------------------------------------------------------
@@ -159,4 +231,231 @@ test_that("unknown predictor in RHS raises an informative error", {
     parse(survival::Surv(t, d) ~ nonexistent, data = df),
     "Failed to parse formula RHS"
   )
+})
+
+# ---------------------------------------------------------------------------
+# `.` on the right-hand side (#273)
+# ---------------------------------------------------------------------------
+# `.` stands for every column the Surv() response does not use, as in
+# survival::coxph(). It used to expand to every column of `data`, so the
+# outcome entered the design as a predictor and the fit still converged.
+
+avc_dot <- na.omit(avc[, c("int_dead", "dead", "age", "mal")])
+
+fit_avc_dot <- function(formula) {
+  hazard(formula, data = avc_dot, dist = "weibull",
+         theta = c(0.3, 1, 0, 0), fit = TRUE)
+}
+
+test_that("`.` excludes the Surv() response columns from the design", {
+  dot <- parse(survival::Surv(int_dead, dead) ~ ., data = avc_dot)
+  explicit <- parse(survival::Surv(int_dead, dead) ~ age + mal,
+                    data = avc_dot)
+  expect_identical(colnames(dot$x), c("age", "mal"))
+  expect_identical(dot$x, explicit$x)
+})
+
+test_that("`. - mal` gives the `~ age` design", {
+  dot <- parse(survival::Surv(int_dead, dead) ~ . - mal, data = avc_dot)
+  explicit <- parse(survival::Surv(int_dead, dead) ~ age, data = avc_dot)
+  expect_identical(colnames(dot$x), "age")
+  expect_identical(dot$x, explicit$x)
+})
+
+test_that("`.` over a data frame holding only the response adds nothing", {
+  # terms() leaves `.` unexpanded here; model.matrix() must not expand it.
+  df <- data.frame(t = c(1, 2, 3, 4), d = c(1, 0, 1, 1))
+  out <- parse(survival::Surv(t, d) ~ ., data = df)
+  expect_null(out$x)
+})
+
+test_that("an empty `.` beside other terms stops rather than dropping them", {
+  df <- data.frame(t = c(1, 2, 3, 4), d = c(1, 0, 1, 1))
+  age <- c(50, 60, 70, 80)
+  # terms() itself warns on this shape; the error is what matters here.
+  expect_error(
+    suppressWarnings(parse(survival::Surv(t, d) ~ . + age, data = df)),
+    "stands for no column"
+  )
+})
+
+test_that("`.` inside a function call is refused, not dropped", {
+  # terms() leaves log(abs(.)) unexpanded, and the RHS used to become ~ 1:
+  # a fit with no covariates and no warning. lm() stops on this formula.
+  expect_error(parse(survival::Surv(int_dead, dead) ~ log(abs(.)),
+                     data = avc_dot),
+               "inside a function call")
+  expect_error(
+    hazard(survival::Surv(int_dead, dead) ~ log(abs(.)), data = avc_dot,
+           dist = "weibull", theta = c(0.3, 1), fit = TRUE),
+    "inside a function call"
+  )
+  # Beside other terms it was refused, but as if `data` held no covariates.
+  expect_error(parse(survival::Surv(int_dead, dead) ~ age + I(.^2),
+                     data = avc_dot),
+               "inside a function call")
+  # Beside a bare `.`, terms() substituted the sum of the columns:
+  # log(age + mal), one covariate nobody asked for.
+  expect_error(parse(survival::Surv(int_dead, dead) ~ . + log(.),
+                     data = avc_dot),
+               "`log\\(\\.\\)`")
+  # terms() substitutes inside `$` as well, giving `$`(cfg, age + mal).
+  # Alone, cfg$. was blamed on `data` holding only the response.
+  expect_error(parse(survival::Surv(int_dead, dead) ~ . + cfg$.,
+                     data = avc_dot),
+               "inside a function call")
+  expect_error(parse(survival::Surv(int_dead, dead) ~ cfg$., data = avc_dot),
+               "inside a function call")
+})
+
+test_that("`.` as a term of the formula operators still expands", {
+  dot <- parse(survival::Surv(int_dead, dead) ~ (.)^2, data = avc_dot)
+  explicit <- parse(survival::Surv(int_dead, dead) ~ (age + mal)^2,
+                    data = avc_dot)
+  expect_identical(colnames(dot$x), c("age", "mal", "age:mal"))
+  expect_identical(dot$x, explicit$x)
+  dot <- parse(survival::Surv(int_dead, dead) ~ .:age, data = avc_dot)
+  expect_identical(colnames(dot$x), c("age", "age:mal"))
+})
+
+test_that("a `~ .` fit is the explicit fit, not one on the response", {
+  fit_dot <- fit_avc_dot(survival::Surv(int_dead, dead) ~ .)
+  fit_exp <- fit_avc_dot(survival::Surv(int_dead, dead) ~ age + mal)
+
+  expect_identical(colnames(fit_dot$data$x), c("age", "mal"))
+  expect_true(fit_exp$fit$converged)
+  expect_true(fit_dot$fit$converged)
+  expect_equal(fit_dot$fit$objective, fit_exp$fit$objective,
+               tolerance = 1e-8)
+  # A ratio, not a difference: mu is about 2e-4, small enough that
+  # expect_equal() would compare it on an absolute scale and pass anything.
+  expect_equal(unname(coef(fit_dot) / coef(fit_exp)), rep(1, 4),
+               tolerance = 1e-6)
+  # With the outcome as a predictor the log-likelihood rose to about -37.
+  expect_lt(fit_dot$fit$objective, -200)
+})
+
+test_that("predict() on a `~ .` fit needs no response columns in newdata", {
+  fit_dot <- fit_avc_dot(survival::Surv(int_dead, dead) ~ .)
+  fit_exp <- fit_avc_dot(survival::Surv(int_dead, dead) ~ age + mal)
+  nd <- data.frame(time = 1, age = 60, mal = 1)
+
+  s_dot <- predict(fit_dot, newdata = nd, type = "survival")
+  expect_length(s_dot, 1L)
+  expect_gt(s_dot, 0)
+  expect_lt(s_dot, 1)
+  expect_equal(s_dot, predict(fit_exp, newdata = nd, type = "survival"),
+               tolerance = 1e-8)
+})
+
+# ---------------------------------------------------------------------------
+# offset() is refused, not dropped
+# ---------------------------------------------------------------------------
+# model.matrix() leaves an offset() term out of the design, and nothing read
+# it back, so a fit with one was the fit without it: same objective, same
+# coefficients, no warning. hazard() now stops instead.
+
+avc_off <- stats::na.omit(avc[, c("int_dead", "dead", "age", "mal")])
+
+test_that("an offset in a single-distribution formula stops the fit", {
+  expect_error(
+    hazard(survival::Surv(int_dead, dead) ~ age + offset(log(mal + 1)),
+           data = avc_off, dist = "weibull",
+           theta = c(mu = 0.1, nu = 1, 0), fit = TRUE),
+    "`offset\\(log\\(mal \\+ 1\\)\\)`.*not supported"
+  )
+})
+
+test_that("an offset in a multiphase global formula stops the fit", {
+  phases <- list(early = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1),
+                 constant = hzr_phase("constant"))
+  expect_error(
+    hazard(survival::Surv(int_dead, dead) ~ age + offset(log(mal + 1)),
+           data = avc_off, dist = "multiphase", phases = phases,
+           fit = TRUE, control = list(n_starts = 1L)),
+    "`offset\\(log\\(mal \\+ 1\\)\\)`.*not supported"
+  )
+})
+
+test_that("an offset in a phase formula stops the fit and names the phase", {
+  phases <- list(
+    early = hzr_phase("cdf", t_half = 0.5, nu = 1, m = 1,
+                      formula = ~ age + offset(log(mal + 1))),
+    constant = hzr_phase("constant")
+  )
+  expect_error(
+    hazard(survival::Surv(int_dead, dead) ~ 1,
+           data = avc_off, dist = "multiphase", phases = phases,
+           fit = TRUE, control = list(n_starts = 1L)),
+    "`offset\\(log\\(mal \\+ 1\\)\\)` in the formula of phase 'early'.*not supported"
+  )
+})
+
+test_that("an offset in a stepwise scope stops rather than vanishing", {
+  expect_error(
+    TemporalHazard:::.hzr_formula_rhs_terms(~ age + offset(mal)),
+    "`offset\\(mal\\)`.*not supported"
+  )
+})
+
+test_that("an offset-free fit is unchanged by the offset guard", {
+  # Pinned against main at 4b68020, before the guard existed.
+  f0 <- hazard(survival::Surv(int_dead, dead) ~ age, data = avc_off,
+               dist = "weibull", theta = c(mu = 0.1, nu = 1, 0), fit = TRUE)
+  expect_true(f0$fit$converged)
+  expect_equal(f0$fit$objective, -222.652224526755, tolerance = 1e-8)
+  # A ratio: mu is about 6e-4, where an absolute comparison is loose.
+  # 1e-4, not tighter: the optimizer stops at a relative gradient of
+  # eps^(1/3), about 6e-6, so platforms may differ past that. The offset
+  # moved survreg's age coefficient by 3%, far outside it.
+  expect_equal(unname(coef(f0)) /
+                 c(0.0005968534, 0.2124829995, -0.0058706368),
+               rep(1, 3), tolerance = 1e-4)
+})
+
+test_that("stats::offset() is a covariate, not a refused offset", {
+  # terms() does not mark it as an offset, and model.matrix() keeps it.
+  out <- parse(survival::Surv(int_dead, dead) ~ age +
+                 stats::offset(log(mal + 1)), data = avc_off)
+  expect_identical(colnames(out$x), c("age", "stats::offset(log(mal + 1))"))
+})
+
+test_that("every offset in a formula is named", {
+  expect_error(
+    parse(survival::Surv(int_dead, dead) ~ offset(age) + mal +
+            offset(log(mal + 1)), data = avc_off),
+    "`offset\\(age\\)`, `offset\\(log\\(mal \\+ 1\\)\\)` in the formula are offsets"
+  )
+})
+
+test_that("an offset in a character stepwise scope stops the screen", {
+  # A character scope never reaches terms(), so it needs its own check.
+  f0 <- hazard(survival::Surv(int_dead, dead) ~ age, data = avc_off,
+               dist = "weibull", theta = c(mu = 0.1, nu = 1, 0), fit = TRUE)
+  expect_error(
+    hzr_stepwise(f0, data = avc_off, scope = c("mal", "offset(mal)"),
+                 direction = "forward", criterion = "wald", trace = FALSE),
+    "`offset\\(mal\\)` in `scope` is an offset"
+  )
+})
+
+test_that("an ordinary character scope screens as it did before the guard", {
+  # The guard refuses only a scope that names an offset. Pinned against main
+  # at 4b68020: `mal` entered at these p-values, under both criteria.
+  f0 <- hazard(survival::Surv(int_dead, dead) ~ age, data = avc_off,
+               dist = "weibull", theta = c(mu = 0.1, nu = 1, 0), fit = TRUE)
+  pinned <- c(score = 2.71143589662e-4, wald = 4.04419913005e-4)
+  for (crit in names(pinned)) {
+    sw <- suppressWarnings(hzr_stepwise(
+      f0, data = avc_off, scope = c("age", "mal"), direction = "forward",
+      criterion = crit, trace = FALSE
+    ))
+    steps <- as.data.frame(sw$steps)
+    expect_identical(steps$action, "enter", label = crit)
+    expect_identical(steps$variable, "mal", label = crit)
+    # A ratio: the p-values are about 3e-4. 1e-3 allows for the optimizer's
+    # eps^(1/3) stopping rule moving the statistic across platforms.
+    expect_equal(steps$p_value / pinned[[crit]], 1, tolerance = 1e-3,
+                 label = crit)
+  }
 })

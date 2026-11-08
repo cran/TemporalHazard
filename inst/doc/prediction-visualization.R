@@ -1,7 +1,15 @@
 ## -----------------------------------------------------------------------------
 #| include: false
+# R CMD build installs the package into R_BUILD_TEMPLIB. A build launched
+# through callr (rcmdcheck, devtools) passes Quarto's R session a profile
+# that resets .libPaths() without it, and every chunk skipped (#276).
+templib <- Sys.getenv("R_BUILD_TEMPLIB")
+if (dir.exists(templib)) .libPaths(c(templib, .libPaths()))
 has_pkg <- requireNamespace("TemporalHazard", quietly = TRUE) &&
   requireNamespace("ggplot2", quietly = TRUE)
+# On CI a package that cannot load must fail the build, not skip every
+# chunk and pass over nothing (#276). loadNamespace() says why it failed.
+if (nzchar(Sys.getenv("CI"))) for (p in c("TemporalHazard", "ggplot2")) loadNamespace(p)
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment  = "#>",
@@ -206,15 +214,18 @@ ggplot(h_long, aes(time, hazard, colour = Phase, linetype = Phase)) +
 
 ## -----------------------------------------------------------------------------
 #| label: fig-mp-surv
-#| fig-cap: "Multiphase parametric survival vs. Kaplan-Meier"
+#| fig-cap: "Multiphase parametric survival vs. Kaplan-Meier (CABGKUL death)"
 #| fig-width: 7
 #| fig-height: 4.5
-surv_mp <- predict(fit_mp, newdata = nd, type = "survival") * 100
+km_cabg    <- survfit(Surv(int_dead, dead) ~ 1, data = cabgkul)
+km_cabg_df <- data.frame(time = km_cabg$time, survival = km_cabg$surv * 100)
+surv_mp    <- predict(fit_mp, newdata = nd, type = "survival") * 100
 
 ggplot() +
-  geom_step(data = km_df, aes(time, survival, colour = "Kaplan-Meier"),
+  geom_step(data = km_cabg_df,
+            aes(time, survival, colour = "Kaplan-Meier"),
             linewidth = 0.5) +
-  geom_line(data = data.frame(time = t_grid, survival = surv_mp),
+  geom_line(data = data.frame(time = t_mp, survival = surv_mp),
             aes(time, survival, colour = "Multiphase (3-phase)"),
             linewidth = 1) +
   scale_colour_manual(
@@ -222,7 +233,7 @@ ggplot() +
                "Kaplan-Meier"         = "#D55E00")
   ) +
   scale_y_continuous(limits = c(0, 100)) +
-  labs(x = "Months after AVC repair", y = "Freedom from death (%)",
+  labs(x = "Months after CABG", y = "Freedom from death (%)",
        colour = NULL) +
   theme_minimal() +
   theme(legend.position = "bottom")

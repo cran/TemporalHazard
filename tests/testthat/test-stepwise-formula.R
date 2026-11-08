@@ -1,3 +1,7 @@
+# Too slow for the CRAN check time budget; runs on CI and locally.
+# See "Where the check's time actually goes" in AGENTS.md.
+skip_on_cran()
+
 # .hzr_formula_rhs_terms ----------------------------------------------------
 
 test_that("rhs_terms extracts labels from common formula shapes", {
@@ -93,10 +97,12 @@ test_that("phase_update_formula creates a formula when the phase had none", {
   expect_identical(.hzr_formula_rhs_terms(out$formula), "age")
 })
 
-test_that("phase_update_formula drops the only term, nulling the slot", {
+test_that("phase_update_formula drops the only term, leaving `~ 1`", {
+  # Not NULL: a NULL phase formula inherits the global design, so dropping a
+  # phase's last covariate would bring the global ones back (#284).
   ph <- hzr_phase("cdf", t_half = 1, nu = 1, m = 1, formula = ~ age)
   out <- .hzr_phase_update_formula(ph, "drop", "age")
-  expect_null(out$formula)
+  expect_identical(deparse(out$formula), "~1")
 })
 
 test_that("phase_update_formula on NULL-formula drop is a no-op", {
@@ -196,4 +202,16 @@ test_that("scope_current_vars rejects `phase` on single-distribution fits", {
 test_that("scope_current_vars rejects non-hazard input", {
   expect_error(.hzr_scope_current_vars(list()),
                "must be a `hazard` object")
+})
+
+test_that("a long response survives the rebuild as one line (#688)", {
+  # deparse() broke this response over two lines, and the rebuilt formula did
+  # not parse, so every candidate refit failed.
+  f <- survival::Surv(long_lower_time_variable_name_for_interval,
+                      long_upper_time_variable_name_for_interval,
+                      type = "interval2") ~ 1
+  expect_gt(length(deparse(f[[2L]])), 1L) # the premise
+  got <- .hzr_formula_update(f, "add", "x")
+  expect_identical(f[[2L]], got[[2L]])
+  expect_identical(attr(stats::terms(got), "term.labels"), "x")
 })

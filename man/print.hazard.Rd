@@ -16,8 +16,9 @@
 }
 \description{
 Compact one-block summary of a fitted \code{hazard} object: sample size,
-number of predictors, distribution, theta vector, and log-likelihood.
-S3 dispatch only -- users call \code{print(fit)} rather than invoking this
+number of predictors, distribution, theta vector, and log-likelihood,
+followed by the "Not done in this run" block described in \code{\link[=hazard]{hazard()}}.
+S3 dispatch only: users call \code{print(fit)} rather than invoking this
 directly.
 }
 \keyword{internal}

@@ -22,25 +22,219 @@
 # SAS Const (G2): (none)                   -->  type = "constant"
 #
 # The 4-parameter C/SAS parameterizations collapse onto this 3-parameter
-# family.  The C DELTA parameter controlled a time transformation
-# B(t) = (exp(delta*t) - 1)/delta that is absorbed by the shape.
+# family.
+#
+# DELTA is NOT among them, and is NOT absorbed by the shape -- it is
+# unimplemented, and delta = 0 is assumed throughout. Earlier comments here
+# and in R/argument_mapping.R said "absorbed", which made the omission look
+# deliberate and harmless. It is neither.
+#
+# The C DELTA controls a time transformation B(t) = (exp(delta*t) - 1)/delta
+# that enters in three separate places, and R computes the delta = 0 branch of
+# each:
+#
+#   1. rho is built from B(tHalf), not from tHalf   (src/common/hzd_set_rho.c)
+#   2. the time argument is B(t), not t             (hzd_ln_G1_and_SG1.c:60)
+#   3. dBt = delta*T enters lnSG1 ADDITIVELY, so the density carries a factor
+#      of exp(delta*T)                              (hzd_ln_G1_and_SG1.c:84)
+#
+# So a PROC HAZARD job with DELTA != 0 is reproduced here against a different
+# function. The condition is detectable -- OUTHAZ carries the estimate and the
+# .lst flags block prints "Delta = 0  Yes" -- and the SAS-facing paths check
+# it: R/read-outhaz.R stops, .hzr_parse_parms() records it as untranslated,
+# and the .lst natural-estimates parser warns. Implementing DELTA is a
+# separate question (see #181).
 
 # ============================================================================
 # hzr_decompos -- core engine
 # ============================================================================
 
+#' Log-scale terms shared by the m > 0 branches of [hzr_decompos()]
+#'
+#' Cases 1 (`nu > 0`) and 3 (`nu < 0`) evaluate the same intermediate
+#' quantities; only the sign of `rho` and the final assembly of `G` differ.
+#' Forming them directly overflows well inside the range an optimizer can
+#' reach: `2^m` is `Inf` from `m = 1024`, and `bt^(-1/nu)` overflows sooner
+#' still (from `m ~ 750` at `t/t_half = 0.5`, `m*nu = 3`).  `btnu` then
+#' becomes `Inf` and `btnu^(-1/m)` collapses silently to 0.
+#'
+#' The `m` in `rho`'s `(2^m - 1)/m` factor cancels the explicit `m`
+#' multiplier, so exactly
+#'   \deqn{m \, b(t)^{-1/\nu} = (t_{1/2}/t)^{1/\nu} (2^m - 1),}
+#' and `log(btnu)` follows from a softplus of the log of that product.  Every
+#' intermediate below stays finite for any `m > 0` a double can hold.
+#'
+#' @param time Numeric vector of positive times.
+#' @param t_half Positive scalar.
+#' @param nu Nonzero scalar.
+#' @param m Positive scalar.
+#' @return List with `log_S` (\eqn{= -\log(\mathrm{btnu})/m}), `log_g`,
+#'   `a`, the softplus argument, so that `log(btnu) = log1pexp(a)`, and the
+#'   terms `log_g` is built from (`e`, `log_bt`, `log_rho`), and
+#'   `log_btnu`, `log1pexp(a)` itself, so a caller need not form it again.
+#' @keywords internal
+.hzr_decompos_g1_logs <- function(time, t_half, nu, m) {
+  # log(2^m - 1) = x + log(1 - exp(-x)) for x = m*log(2).  Both tails are
+  # exact: hzr_log1mexp() switches to log(-expm1(-x)) for small x, where the
+  # naive log1p(-2^(-m)) loses digits from about m = 1e-3 down and returns
+  # -Inf once 2^(-m) rounds to 1; and for large m, exp(-x) underflows to 0,
+  # leaving the exact m*log(2).
+  x_log2   <- m * log(2)
+  log_2m1  <- x_log2 + hzr_log1mexp(x_log2)
+
+  # log(rho) = log|nu| + log(t_half) + nu*log((2^m - 1)/m)
+  q       <- nu * (log_2m1 - log(m))
+  log_rho <- log(abs(nu)) + log(t_half) + q
+  log_bt  <- log(time) - log(t_half) - q
+
+  # a = log(m * bt^(-1/nu)) = (1/nu)*log(t_half/t) + log(2^m - 1)
+  a        <- log(t_half / time) / nu + log_2m1
+  log_btnu <- hzr_log1pexp(a)
+
+  # Softplus excess e = log(btnu) - a = log(1 + exp(-a)), evaluated as
+  # log1pexp(-a) so neither tail overflows.  Subtracting it below removes an
+  # O(m) cancellation: the naive
+  #   log_g = (-1/m - 1)*log_btnu + (-1/nu - 1)*log_bt - log_rho
+  # differences two terms of size ~m*log(2) to reach an O(1) answer, losing
+  # ~1e-13 relative accuracy by m = 2000.
+  e     <- hzr_log1pexp(-a)
+  log_S <- -log_btnu / m
+
+  list(log_S = log_S,
+       log_g = log_S - e - log(m) - log_bt - log_rho,
+       a = a, e = e, log_bt = log_bt, log_rho = log_rho, log_btnu = log_btnu)
+}
+
+#' log(1 - exp(-x)) from L = log(x), for x > 0
+#'
+#' The survival of a phase far past saturation is `1 - G` with `G` within a
+#' rounding of 1, and `-log(G) = x` is then far below 1. Carrying `x` as its
+#' log keeps it when `x` itself would underflow: `log(1 - exp(-x))` is
+#' `log(x) - x/2 + x^2/24` to relative error `x^4`, and from `x = 1e-5` the
+#' ordinary [hzr_log1mexp()] is exact.
+#' @param L Numeric vector, `log(x)`.
+#' @return Numeric vector, `log(1 - exp(-exp(L)))`.
+#' @keywords internal
+#' @noRd
+.hzr_log1mexp_of_log <- function(L) {
+  out <- rep(NA_real_, length(L))
+  tiny <- !is.na(L) & L < log(1e-5)
+  x <- exp(L[tiny])
+  out[tiny] <- L[tiny] - x / 2 + x^2 / 24
+  # Where x overflows, G = exp(-x) is 0 and log(1 - G) is 0: a phase that
+  # has not started, as at a time near 0. hzr_log1mexp(Inf) is NA by design.
+  huge <- !is.na(L) & !tiny & !is.finite(exp(L))
+  out[huge] <- 0
+  big <- !is.na(L) & !tiny & !huge
+  out[big] <- hzr_log1mexp(exp(L[big]))
+  out
+}
+
+#' log(1 - exp(-exp(L))) minus L, without forming either
+#'
+#' The correction `.hzr_log1mexp_of_log()` adds to `L`. Wanted on its own
+#' where `L` is huge and would swamp it.
+#' @param L Numeric vector, `log(x)`.
+#' @return Numeric vector.
+#' @keywords internal
+#' @noRd
+.hzr_log1mexp_of_log_excess <- function(L) {
+  out <- rep(NA_real_, length(L))
+  tiny <- !is.na(L) & L < log(1e-5)
+  x <- exp(L[tiny])
+  out[tiny] <- -x / 2 + x^2 / 24
+  big <- !is.na(L) & !tiny
+  out[big] <- hzr_log1mexp(exp(L[big])) - L[big]
+  out
+}
+
+#' .hzr_log1mexp_of_log() and its excess from one pass
+#'
+#' The hazard form reads both, and each formed `hzr_log1mexp(exp(L))` on its
+#' own (#631). The expressions are those of the two functions above, so each
+#' result is identical to theirs.
+#' @param L Numeric vector, `log(x)`.
+#' @return `list(value, excess)`.
+#' @keywords internal
+#' @noRd
+.hzr_log1mexp_of_log_pair <- function(L) {
+  value <- rep(NA_real_, length(L))
+  excess <- rep(NA_real_, length(L))
+  tiny <- !is.na(L) & L < log(1e-5)
+  x <- exp(L[tiny])
+  value[tiny] <- L[tiny] - x / 2 + x^2 / 24
+  excess[tiny] <- -x / 2 + x^2 / 24
+  rest <- !is.na(L) & !tiny
+  r <- hzr_log1mexp(exp(L[rest]))
+  excess[rest] <- r - L[rest]
+  # Where exp(L) overflows, log(1 - G) is 0 (see .hzr_log1mexp_of_log()).
+  huge <- rest & !is.finite(exp(L))
+  value[huge] <- 0
+  big <- rest & !huge
+  value[big] <- r[big[rest]]
+  list(value = value, excess = excess)
+}
+
+#' log(log(1 + exp(a))) without underflow
+#'
+#' For very negative `a`, `log(1 + exp(a))` is `exp(a)` to first order and
+#' underflows to 0, where its log is still `a`.
+#' @param a Numeric vector.
+#' @param lp `hzr_log1pexp(a)`, when the caller has it already.
+#' @return Numeric vector.
+#' @keywords internal
+#' @noRd
+.hzr_log_log1pexp <- function(a, lp = hzr_log1pexp(a)) {
+  out <- rep(NA_real_, length(a))
+  low <- !is.na(a) & a < -30
+  e <- exp(a[low])
+  # log(log1p(e)) = log(e) + log(1 - e/2 + e^2/3 - ...), to relative e^3
+  out[low] <- a[low] + log1p(-e / 2 + e^2 / 3)
+  rest <- !is.na(a) & !low
+  out[rest] <- log(lp[rest])
+  out
+}
+
+#' log(-log(1 - exp(-y))) without underflow, for y > 0
+#'
+#' For large `y`, `-log(1 - exp(-y))` is `exp(-y)` to first order and
+#' underflows, where its log is still `-y`.
+#' @param y Numeric vector, positive.
+#' @return Numeric vector.
+#' @keywords internal
+#' @noRd
+.hzr_log_neg_log1mexp <- function(y) {
+  out <- rep(NA_real_, length(y))
+  high <- !is.na(y) & y > 30
+  e <- exp(-y[high])
+  # -log(1 - e) = e + e^2/2 + e^3/3 + ... = e * (1 + e/2 + e^2/3 + ...)
+  out[high] <- -y[high] + log1p(e / 2 + e^2 / 3)
+  # y = 0 exactly (a time of 0, or t / rho underflowing): -log(1 - 1) is
+  # +Inf, and so is its log. hzr_log1mexp(0) is NA by design, and NA here
+  # made log(1 - G) NA where the phase has not started (found by review).
+  zero <- !is.na(y) & !high & y == 0
+  out[zero] <- Inf
+  rest <- !is.na(y) & !high & !zero
+  out[rest] <- log(-hzr_log1mexp(y[rest]))
+  out
+}
+
+
 #' Generalized temporal decomposition
 #'
 #' Computes the cumulative distribution \eqn{G(t)}, density \eqn{g(t)}, and
 #' hazard \eqn{h(t) = g(t)/(1 - G(t))} for the parametric family defined by
-#' half-life, time exponent, and shape.  This single function generates all
-#' temporal phase shapes used in multiphase hazard models.
+#' half-life, time exponent, and shape.  It supplies the `"cdf"` and
+#' `"hazard"` phase shapes of a multiphase hazard model; the `"g3"` late phase
+#' comes from [hzr_decompos_g3()], and the `"constant"` phase is linear in time.
 #'
 #' @section Parameter mapping from SAS/C HAZARD:
 #'
 #' The original C code used separate parameterizations for early (DELTA,
-#' RHO/THALF, NU, M) and late (TAU, GAMMA, ALPHA, ETA) phases.  Both
-#' collapse onto the three parameters here.  See
+#' RHO/THALF, NU, M) and late (TAU, GAMMA, ALPHA, ETA) phases.  The early
+#' phase maps onto the three parameters here: DELTA must be 0, and RHO is
+#' fixed by THALF, NU and M.  The late phase does not: it is a separate
+#' four-parameter shape computed by [hzr_decompos_g3()].  See
 #' [hzr_argument_mapping()] for the full translation table.
 #'
 #' @section Valid parameter combinations:
@@ -91,7 +285,7 @@
 #' @param m Shape exponent controlling the distributional form.
 #'   SAS early: `M`.  SAS late: relates to `GAMMA`/`ALPHA`.
 #'
-#' @return A named list with three numeric vectors, each the same length
+#' @return A named list with four numeric vectors, each the same length
 #'   as `time`:
 #' \describe{
 #'   \item{G}{Cumulative distribution \eqn{G(t) \in [0, 1]}.}
@@ -99,6 +293,11 @@
 #'     temporal pattern.}
 #'   \item{h}{Hazard \eqn{h(t) = g(t)/(1 - G(t)) \ge 0}.  The "late"
 #'     phase temporal pattern.}
+#'   \item{log_surv}{\eqn{\log(1 - G(t))}, computed from each case's
+#'     own log-scale terms rather than from `G`, so it keeps its accuracy
+#'     where `G` rounds to 1.  `-log_surv` is the cumulative hazard of a
+#'     `"hazard"` phase, and `h` is computed as
+#'     \eqn{\exp(\log g - \log(1 - G))}.}
 #' }
 #'
 #' @references
@@ -145,6 +344,46 @@ hzr_decompos <- function(time, t_half, nu, m) {
       is.numeric(m) && length(m) == 1L && is.finite(m)
   )
 
+  .hzr_decompos_impl(time, t_half, nu, m, cdf_only = FALSE)
+}
+
+#' G and g alone, for a phase that reads nothing else
+#'
+#' The cdf form of a phase reads only `G` and `g`. Forming `log(1 - G)` and
+#' the hazard on the log scale, which only the hazard form reads, is most of
+#' what [hzr_decompos()] costs since #578, and the cdf form paid for it on
+#' every evaluation (#631). `G` and `g` are computed by the same expressions as
+#' in [hzr_decompos()], so they are identical to its own; the list has no `h`
+#' or `log_surv`, so a caller that reads them gets `NULL`. Call it only where
+#' the phase is known to be of cdf form.
+#' @inheritParams hzr_decompos
+#' @return `list(G, g)`.
+#' @keywords internal
+#' @noRd
+.hzr_decompos_cdf <- function(time, t_half, nu, m) {
+
+  # --- Input validation ------------------------------------------------------
+  stopifnot(
+    "time must be numeric"   = is.numeric(time),
+    "t_half must be a positive scalar" =
+      is.numeric(t_half) && length(t_half) == 1L && t_half > 0,
+    "nu must be a numeric scalar" =
+      is.numeric(nu) && length(nu) == 1L && is.finite(nu),
+    "m must be a numeric scalar" =
+      is.numeric(m) && length(m) == 1L && is.finite(m)
+  )
+
+  .hzr_decompos_impl(time, t_half, nu, m, cdf_only = TRUE)
+}
+
+#' The body of hzr_decompos(), past its argument checks
+#'
+#' @inheritParams hzr_decompos
+#' @param cdf_only Return `list(G, g)` as soon as both are formed.
+#' @keywords internal
+#' @noRd
+.hzr_decompos_impl <- function(time, t_half, nu, m, cdf_only) {
+
   if (m < 0 && nu < 0) {
     stop("Decomposition undefined when both m < 0 and nu < 0 (m = ",
          m, ", nu = ", nu, ").", call. = FALSE)
@@ -158,38 +397,152 @@ hzr_decompos <- function(time, t_half, nu, m) {
   if (m != 0) mm1 <- -(1 / m) - 1
   if (nu != 0) num1 <- -(1 / nu) - 1
 
+  # Set only by the cases whose hazard must be formed without log(g) and
+  # log(1 - G), which there carry a huge common term (#578).
+  log_h <- NULL
+
   # --- Case dispatch ---------------------------------------------------------
   if (m > 0 && nu > 0) {
-    # Case 1: standard sigmoidal
-    rho   <- nu * t_half * (((2^m - 1) / m)^nu)
-    bt    <- nu * time / rho
-    btnu  <- 1 + m * bt^(-1 / nu)
-    G     <- btnu^(-1 / m)
-    g     <- (btnu^mm1) * (bt^num1) / rho
+    # Case 1: standard sigmoidal.  Evaluated on the log scale via
+    # .hzr_decompos_g1_logs(); the direct form overflowed for large m.
+    lg    <- .hzr_decompos_g1_logs(time, t_half, nu, m)
+    G     <- exp(lg$log_S)
+    g     <- exp(lg$log_g)
+    if (cdf_only) return(list(G = G, g = g))
+    # -log(G) = log(btnu) / m, carried as its log (#578). log(btnu) is
+    # log1pexp(a), which underflows to 0 far past saturation, where
+    # log(1 - G) would read -Inf.
+    lp       <- lg$log_btnu
+    L        <- .hzr_log_log1pexp(lg$a, lp) - log(m)
+    lm       <- .hzr_log1mexp_of_log_pair(L)
+    log_surv <- lm$value
+    log_g    <- lg$log_g
+    # log(g) and log(1 - G) share the term a, which is huge for a tiny nu
+    # (a = log(t_half / t) / nu + ...): their difference would lose the
+    # hazard. Cancelled here: log_h = log_S + (a - log(log1pexp(a)))
+    # - log1pexp(a) - log_bt - log_rho - excess(L) (Copilot, #583).
+    # Formed by index rather than ifelse(), which evaluates both branches
+    # over every row (#631). Where a is NA, ifelse() gave NA and this gives
+    # NA or NaN; either way log_h is not finite there and is replaced below.
+    a_less_ll <- lg$a - log(lp)
+    low <- which(lg$a < -30)
+    ea <- exp(lg$a[low])
+    a_less_ll[low] <- -log1p(-ea / 2 + ea^2 / 3)
+    log_h <- lg$log_S + a_less_ll - lp - lg$log_bt -
+      lg$log_rho - lm$excess
 
   } else if (m == 0 && nu > 0) {
     # Case 1L: Weibull-like (m -> 0 limit)
-    rho   <- nu * t_half * (log(2)^nu)
-    bt    <- nu * time / rho
-    btnu  <- bt^(-1 / nu)
-    G     <- exp(-btnu)
-    g     <- G * (bt^num1) / rho
+    # bt = nu * time / rho = (time / t_half) * log(2)^(-nu), carried as its
+    # log from its parts: near t = 0, or with a large t_half, bt itself
+    # underflows to 0 and log(bt) would be -Inf (#672). nu is cancelled
+    # before the logs are taken, not after: log(nu) on both sides lost
+    # G(t_half) = 1/2 for a tiny nu.
+    log_rho <- log(nu) + log(t_half) + nu * log(log(2))
+    log_bt  <- log(time) - log(t_half) - nu * log(log(2))
+    # a = -log(bt) / nu = log(btnu), formed as one term: for a tiny nu, -1/nu
+    # overflows while log(bt) rounds to 0, and their product was -Inf * 0.
+    # At t = t_half it is log(log(2)) exactly.
+    a       <- (log(t_half) - log(time)) / nu + log(log(2))
+    btnu    <- exp(a)
+    G       <- exp(-btnu)
+    # On the log scale: near t = 0, G underflows to 0 while bt^num1
+    # overflows, and the product G * bt^num1 was 0 * Inf = NaN where the
+    # limit is 0 (#672). num1 * log(bt) = a - log(bt).
+    log_g <- -btnu + a - log_bt - log_rho
+    g     <- exp(log_g)
+    if (cdf_only) return(list(G = G, g = g))
+    # -log(G) = btnu = bt^(-1/nu), carried as its log, a (#578). Near t = 0,
+    # or with a large t_half, a is large, and log(1 - G) is 0.
+    L        <- a
+    log_surv <- .hzr_log1mexp_of_log(L)
+    # num1 * log(bt) and log(1 - G) share a, huge for a tiny nu;
+    # cancelled: log_h = -btnu - log(bt) - log(rho) - excess(L).
+    log_h    <- -btnu - log_bt - log_rho - .hzr_log1mexp_of_log_excess(L)
 
   } else if (m < 0 && nu > 0) {
-    # Case 2: heavy-tailed
-    rho   <- nu * t_half / ((1 - 2^m)^(-nu) - 1)
-    bt    <- 1 + nu * time / rho
-    btnu  <- 1 - bt^(-1 / nu)
-    G     <- btnu^(-1 / m)
-    g     <- -(btnu^mm1) * (bt^num1) / (m * rho)
+    # Case 2: heavy-tailed.  `1 - 2^m` loses every significant digit once
+    # 2^m falls below eps (m < -52): it rounds to exactly 1, so
+    # (1 - 2^m)^(-nu) - 1 is 0, rho is Inf, and G collapses silently to 0.
+    # The decay starts well before the collapse -- at m = -20 the direct form
+    # is already wrong in the 10th digit.  hzr_log1mexp() evaluates
+    # log(1 - 2^m) without the cancellation and expm1() recovers the
+    # difference, holding full precision down to where 2^m itself underflows.
+    log_1m2m <- hzr_log1mexp(-m * log(2))       # log(1 - 2^m)
+    dm       <- expm1(-nu * log_1m2m)           # (1 - 2^m)^(-nu) - 1
+    log_bt   <- log1p(time * dm / t_half)       # bt = 1 + nu*time/rho
+    log_btnu <- hzr_log1mexp(log_bt / nu)       # log(1 - bt^(-1/nu))
+    log_rho  <- log(nu) + log(t_half) - log(dm)
+    G     <- exp(-log_btnu / m)
+    log_g <- mm1 * log_btnu + num1 * log_bt - log(-m) - log_rho
+    g     <- exp(log_g)
+    if (cdf_only) return(list(G = G, g = g))
+    # -log(G) = log_btnu / m, both negative; log_btnu = log(1 - e^-y) with
+    # y = log_bt / nu, whose minus is carried as its log (#578).
+    y        <- log_bt / nu
+    L        <- .hzr_log_neg_log1mexp(y) - log(-m)
+    log_surv <- .hzr_log1mexp_of_log(L)
+    # num1 * log_bt carries -y, and log(1 - G) carries -y through L. For a
+    # tiny nu y = log_bt / nu stays of order 1 unless the phase is also
+    # saturated (t_half far below t), and then it is huge (Copilot, #583).
+    # Cancelled: log_h = mm1 * log_btnu - log_bt - log_rho
+    # - (y + log(-log1mexp(y))) - excess(L).
+    e_y      <- exp(-y)
+    y_excess <- ifelse(y > 30, log1p(e_y / 2 + e_y^2 / 3),
+                       y + log(-hzr_log1mexp(y)))
+    log_h    <- mm1 * log_btnu - log_bt - log_rho - y_excess -
+      .hzr_log1mexp_of_log_excess(L)
+    # Where G is NA -- past the 2^m underflow (m < -1074), or where
+    # log(bt) / nu underflows to 0 for one row -- log(1 - G) must not read
+    # as 0, a plausible cumulative hazard (Copilot and review, #583).
+    log_surv[is.na(G)] <- NA_real_
 
   } else if (m < 0 && nu == 0) {
     # Case 2L: exponential decay (nu -> 0 limit)
-    rho   <- -t_half / log(1 - 2^m)
+    # log(1 - 2^m) as log1mexp, as in Case 2: below m = -52, 1 - 2^m rounds
+    # to 1, rho became Inf and G collapsed to 0 at t_half itself (Copilot,
+    # #583).
+    rho   <- -t_half / hzr_log1mexp(-m * log(2))
+    # Below about m = -1024, 2^m is under 1 / .Machine$double.xmax and rho
+    # overflows: G(t_half) came back as 0, plausible and wrong. Unavailable,
+    # as Case 2 is past its own underflow (Copilot, #583).
+    if (!is.finite(rho)) {
+      na <- rep(NA_real_, length(time))
+      return(list(G = na, g = na, h = na, log_surv = na))
+    }
     bt    <- exp(-time / rho)
-    btm   <- 1 - bt
+    # 1 - e^(-t/rho) as -expm1(): for a large |m|, t / rho is far below 1
+    # and 1 - bt kept no digits.
+    btm   <- -expm1(-time / rho)
     G     <- btm^(-1 / m)
-    g     <- -(btm^mm1) * bt / (m * rho)
+    # Divided in turn: m * rho overflows for |m| * rho > .Machine$double.xmax
+    # (m from about -1015 at t_half = 1) and g read 0 (review, #583).
+    g     <- -(btm^mm1) * bt / m / rho
+    if (cdf_only) return(list(G = G, g = g))
+    # -log(G) = log(btm) / m with btm = 1 - e^(-t/rho). Far past saturation
+    # btm rounds to 1 and G to 1; carried as a log, it does not (#578).
+    # Here, unlike every other case, the large term is t / rho itself, not
+    # its log: far past saturation it is 1e13 and more, and log(1 - G) and
+    # log(g) each carry it, so their difference would lose the hazard to
+    # rounding. The hazard is assembled from the corrections alone.
+    y        <- time / rho
+    # log(1 - e^-y), taken from log(y) where y is small: there it is
+    # log(y) - y/2 to relative y^2, and y = t / rho itself can underflow to
+    # 0 (a time near 0 with a large t_half) while log(y) cannot (Copilot,
+    # #583). hzr_log1mexp(0) is NA.
+    log_y    <- log(time) - log(rho)
+    # Where y overflows (t_half near the smallest double), 1 - e^-y is 1.
+    lm1e     <- ifelse(y < 1e-5, log_y - y / 2,
+                       ifelse(is.infinite(y), 0, hzr_log1mexp(y)))
+    # y + log(-log(1 - e^-y)), the correction to -y; its own series where
+    # -log(1 - e^-y) would underflow (y > 30).
+    e_y      <- exp(-y)
+    y_excess <- ifelse(y > 30, log1p(e_y / 2 + e_y^2 / 3), y + log(-lm1e))
+    L        <- y_excess - y - log(-m)
+    log_surv <- .hzr_log1mexp_of_log(L)
+    log_g    <- mm1 * lm1e - y - log(-m * rho)
+    log_h    <- mm1 * lm1e - log(rho) - y_excess -
+      .hzr_log1mexp_of_log_excess(L)
 
   } else if (m > 0 && nu < 0) {
     # Case 3: bounded cumulative (C HAZARD g1flag = 5, "Mixed Generic")
@@ -199,19 +552,37 @@ hzr_decompos <- function(time, t_half, nu, m) {
     # breaking continuity with the m -> 0 limit (Case 3L).  With /m the m
     # factors cancel and G reduces to 1 - (bt^(-1/nu) + 1)^(-1/m), matching
     # C exactly (verified against src/common/hzd_ln_G1_and_SG1.c case 5).
-    rho   <- -nu * t_half * (((2^m - 1) / m)^nu)
-    bt    <- -nu * time / rho
-    btnu  <- 1 + m * bt^(-1 / nu)
-    G     <- 1 - btnu^(-1 / m)
-    g     <- (btnu^mm1) * (bt^num1) / rho
+    # Shares every intermediate with Case 1 (the -nu factors in rho and bt
+    # cancel); only the assembly of G differs.  expm1 keeps 1 - exp(log_S)
+    # accurate when log_S is near 0.
+    lg    <- .hzr_decompos_g1_logs(time, t_half, nu, m)
+    G     <- -expm1(lg$log_S)
+    g     <- exp(lg$log_g)
+    if (cdf_only) return(list(G = G, g = g))
+    # 1 - G is exp(log_S) exactly (#578).
+    log_surv <- lg$log_S
+    log_g    <- lg$log_g
+    # h = g / (1 - G): log_S cancels exactly, and it is huge for a tiny |nu|.
+    log_h    <- -lg$e - log(m) - lg$log_bt - lg$log_rho
 
   } else if (m == 0 && nu < 0) {
     # Case 3L: bounded exponential (m -> 0 limit)
     rho   <- -nu * t_half * (log(2)^nu)
     bt    <- -nu * time / rho
     btnu  <- bt^(-1 / nu)
-    G     <- 1 - exp(-btnu)
+    # -expm1(), not 1 - exp(): below btnu ~ 1e-16, exp(-btnu) rounds to 1 and
+    # G to exactly 0 while g, formed directly, does not. The cumulative hazard
+    # then vanished with the hazard positive, and a multiphase start climbed
+    # that seam to log mu 130 and a log-likelihood of +6380.86 (#600).
+    G     <- -expm1(-btnu)
     g     <- exp(-btnu) * (bt^num1) / rho
+    if (cdf_only) return(list(G = G, g = g))
+    # 1 - G is exp(-btnu) exactly (#578).
+    log_surv <- -btnu
+    log_g    <- -btnu + num1 * log(bt) - log(rho)
+    # h = g / (1 - G) = bt^num1 / rho exactly: btnu cancels, and far past
+    # saturation it is 1e17 and more, so it is cancelled here, not in logs.
+    log_h    <- num1 * log(bt) - log(rho)
 
   } else {
     # Remaining combination: nu == 0 with m >= 0.  The nu -> 0 limit is only
@@ -224,12 +595,23 @@ hzr_decompos <- function(time, t_half, nu, m) {
          "supply a nonzero nu when m >= 0.", call. = FALSE)
   }
 
-  # --- Hazard from density and CDF ------------------------------------------
-  # h(t) = g(t) / (1 - G(t)), with guard against G(t) = 1
-  one_minus_G <- pmax(1 - G, .Machine$double.xmin)
-  h <- g / one_minus_G
+  # --- Hazard from density and survival -------------------------------------
+  # h(t) = g(t) / (1 - G(t)). Formed from log(1 - G), not from 1 - G: once G
+  # rounded to 1 the old guard divided by double.xmin, and h came back near
+  # 1e290 where it is of order 1 (#578). The density is taken as its log too:
+  # far past saturation g itself underflows to 0 while h does not.
+  # Where a case's cancelled form is not finite (its own extremes), or the
+  # case has none, the plain difference is used.
+  if (is.null(log_h)) log_h <- log_g - log_surv
+  # By index rather than ifelse() (#631), keeping ifelse()'s attributes, those
+  # of is.finite(): names and dims, but no other attribute or class of time.
+  fin <- is.finite(log_h)
+  bad <- which(!fin)
+  if (length(bad)) log_h[bad] <- (log_g - log_surv)[bad]
+  attributes(log_h) <- attributes(fin)
+  h <- exp(log_h)
 
-  list(G = G, g = g, h = h)
+  list(G = G, g = g, h = h, log_surv = log_surv)
 }
 
 
@@ -242,7 +624,7 @@ hzr_decompos <- function(time, t_half, nu, m) {
 #' Computes the cumulative intensity \eqn{G_3(t)} and its derivative
 #' \eqn{g_3(t) = dG_3/dt} for the late-phase parametric family used in the
 #' original Blackstone C/SAS HAZARD code.  Unlike [hzr_decompos()] (which
-#' computes the early-phase G1 -- a bounded CDF), this function can produce
+#' computes the early-phase G1, a bounded CDF), this function can produce
 #' **unbounded** values, making it suitable for modelling increasing late risk.
 #'
 #' @section Mathematical form:
@@ -320,6 +702,10 @@ hzr_decompos_g3 <- function(time, tau, gamma, alpha, eta) {
   # --- Common terms ----------------------------------------------------------
   # Work on log scale for numerical stability, mirroring the C implementation
   ln_t_tau  <- log(time / tau)                    # ln(T/tau)
+  # If the quotient itself underflows (tiny time, huge tau), take the log
+  # ratio as a difference instead of -Inf.
+  lost <- !is.finite(ln_t_tau)
+  ln_t_tau[lost] <- log(time[lost]) - log(tau)
   ln_t_tau_g <- gamma * ln_t_tau                   # gamma * ln(T/tau)
 
   # --- Case dispatch: alpha > 0 vs alpha = 0 --------------------------------
@@ -334,6 +720,16 @@ hzr_decompos_g3 <- function(time, tau, gamma, alpha, eta) {
     tGamma <- .log1pexp(ln_t_tau_g)   # ln((t/tau)^gamma + 1)
     inner  <- tGamma / alpha           # ln((t/tau)^gamma + 1) / alpha
     tEta   <- .log_expm1(inner)        # ln(exp(inner) - 1)
+    # Where inner is tiny, tEta = ln(inner) to within inner / 2. Compute that
+    # log directly: once inner underflows, .log_expm1() clamps to double.xmin,
+    # which freezes G3 and puts g3 wrong by orders of magnitude (the C code's
+    # ln(e^x + 1) returns 0 there too). ln(tGamma) = ln_t_tau_g below -35, and
+    # testing on the log scale also catches an alpha large enough to
+    # underflow the division.
+    ln_inner <- ifelse(ln_t_tau_g <= -35, ln_t_tau_g, log(tGamma)) - log(alpha)
+    # A non-finite log (e.g. gamma = Inf) keeps the old path.
+    deep <- is.finite(ln_inner) & ln_inner <= log(1e-10)
+    tEta[deep] <- ln_inner[deep]
     lnG3   <- eta * tEta
 
     G3 <- exp(lnG3)
@@ -359,6 +755,10 @@ hzr_decompos_g3 <- function(time, tau, gamma, alpha, eta) {
 
     t_tau_g <- exp(ln_t_tau_g)         # (t/tau)^gamma
     tGamma  <- .log_expm1(t_tau_g)     # ln(exp((t/tau)^gamma) - 1)
+    # As above: for tiny (t/tau)^gamma, tGamma = ln_t_tau_g, and the direct
+    # form survives the underflow of exp(ln_t_tau_g).
+    deep <- is.finite(ln_t_tau_g) & t_tau_g <= 1e-10
+    tGamma[deep] <- ln_t_tau_g[deep]
     lnG3    <- eta * tGamma
 
     G3 <- exp(lnG3)
@@ -434,9 +834,9 @@ hzr_decompos_g3 <- function(time, tau, gamma, alpha, eta) {
 #' @param t_half Half-life parameter (> 0).
 #' @param nu Time exponent.
 #' @param m Shape parameter.
-#' @param type Phase type: `"cdf"` (early -- uses \eqn{G(t)}),
-#'   `"hazard"` (late -- uses cumulative hazard from \eqn{h(t)}), or
-#'   `"constant"` (flat rate -- \eqn{\Phi = t}).
+#' @param type Phase type: `"cdf"` (early, uses \eqn{G(t)}),
+#'   `"hazard"` (late, uses cumulative hazard from \eqn{h(t)}), or
+#'   `"constant"` (flat rate, \eqn{\Phi = t}).
 #'
 #' @return Numeric vector of cumulative hazard contributions \eqn{\Phi(t)},
 #'   same length as `time`.
@@ -471,15 +871,17 @@ hzr_phase_cumhaz <- function(time, t_half = 1, nu = 1, m = 0,
     return(time)
   }
 
-  d <- hzr_decompos(time, t_half = t_half, nu = nu, m = m)
+  d <- if (type == "cdf") {
+    .hzr_decompos_cdf(time, t_half = t_half, nu = nu, m = m)
+  } else {
+    hzr_decompos(time, t_half = t_half, nu = nu, m = m)
+  }
 
   switch(type,
     cdf    = d$G,
-    hazard = {
-      # Cumulative hazard from h(t): integral_0^t h(s)ds = -log(1 - G(t))
-      one_minus_G <- pmax(1 - d$G, .Machine$double.xmin)
-      -log(one_minus_G)
-    }
+    # Cumulative hazard from h(t): integral_0^t h(s)ds = -log(1 - G(t)),
+    # from the decomposition's own log(1 - G) (#578).
+    hazard = -d$log_surv
   )
 }
 
@@ -491,9 +893,19 @@ hzr_phase_cumhaz <- function(time, t_half = 1, nu = 1, m = 0,
 #' Derivatives of phase cumulative and instantaneous hazard w.r.t. shape params
 #'
 #' Computes \eqn{\Phi_j(t)}, \eqn{\phi_j(t)}, and their derivatives with
-#' respect to `t_half`, `nu`, and `m` using central finite differences on
-#' [hzr_decompos()].  The `log_t_half` derivative is obtained via the chain
-#' rule: \eqn{d\Phi/d(\log t_{1/2}) = t_{1/2} \cdot d\Phi/dt_{1/2}}.
+#' respect to `log_t_half`, `nu`, and `m` using finite differences on
+#' [hzr_decompos()]: central in `log_t_half` and `nu`, and in `m` central except
+#' near `m = 0`, where the stencil keeps the sign of `m`.  [hzr_decompos()]
+#' changes formula at `m = 0` and the two sides meet in a cusp, so for
+#' `m >= 0` a stencil that would reach 0 becomes one-sided forward (second
+#' order), and for `m < 0` the step is capped at 1% of `|m|` (floored at
+#' 1e-10) and becomes one-sided backward if it would still reach 0.  The
+#' `log_t_half` derivative is a central difference in `log_t_half` itself,
+#' so its step is proportional to `t_half` at every scale. It is `NaN` where
+#' the two points of the difference cannot both be used: `t_half` too small
+#' or too large to step, or a point at which [hzr_decompos()] fails. A
+#' `"hazard"` phase's value is `-log_surv` from [hzr_decompos()], which keeps
+#' its accuracy far past saturation, so the derivative does too.
 #'
 #' @param time Numeric vector of positive times.
 #' @param t_half Positive scalar half-life.
@@ -534,8 +946,9 @@ hzr_phase_cumhaz <- function(time, t_half = 1, nu = 1, m = 0,
     ))
   }
 
-  # Base evaluation
-  d0 <- hzr_decompos(time, t_half = t_half, nu = nu, m = m)
+  # Base evaluation. The cdf form reads only G and g (#631).
+  decompos <- if (type == "cdf") .hzr_decompos_cdf else hzr_decompos
+  d0 <- decompos(time, t_half = t_half, nu = nu, m = m)
 
   # Extract Phi and phi from decomposition for the given phase type
   extract <- function(d, tp) {
@@ -543,9 +956,8 @@ hzr_phase_cumhaz <- function(time, t_half = 1, nu = 1, m = 0,
       Phi <- d$G
       phi <- d$g
     } else {
-      # "hazard": Phi = -log(1 - G), phi = h
-      one_minus_G <- pmax(1 - d$G, .Machine$double.xmin)
-      Phi <- -log(one_minus_G)
+      # "hazard": Phi = -log(1 - G), phi = h, from log(1 - G) (#578)
+      Phi <- -d$log_surv
       phi <- d$h
     }
     list(Phi = Phi, phi = phi)
@@ -561,34 +973,63 @@ hzr_phase_cumhaz <- function(time, t_half = 1, nu = 1, m = 0,
     if (m_val < 0 && n_val < 0) return(NULL)
     if (th <= 0) return(NULL)
     tryCatch(
-      hzr_decompos(time, t_half = th, nu = n_val, m = m_val),
+      decompos(time, t_half = th, nu = n_val, m = m_val),
       error = function(e) NULL
     )
   }
 
-  # Derivative w.r.t. t_half (then multiply by t_half for log_t_half chain rule)
-  h_th <- eps_rel * max(abs(t_half), 1e-4)
-  d_plus  <- perturb_decompos(t_half + h_th, nu, m)
-  d_minus <- perturb_decompos(t_half - h_th, nu, m)
-  if (!is.null(d_plus) && !is.null(d_minus)) {
+  # Derivative w.r.t. log_t_half, by a central difference IN log_t_half: the
+  # two points are t_half * exp(+/- h). It used to step t_half linearly by
+  # eps_rel * max(t_half, 1e-4) and multiply the slope by t_half. Below
+  # t_half = 1e-4 that floor stopped the step shrinking with t_half, and
+  # below about 6e-10 the step was larger than t_half itself, so the minus
+  # point was not positive and the difference went one-sided over a span of
+  # several times t_half: 3% off at t_half = exp(-20), a factor of 3.7 at
+  # exp(-23.28), with nu = 0.2931 and m = 120 (#574). A step in the log is
+  # proportional to t_half at every scale, as the second differences in
+  # .hzr_phase_second_derivatives() and the g3 tau derivative already are,
+  # and both points are positive, so there is no one-sided case.
+  #
+  # The step's size is the old one where the old one was sound: eps_rel in
+  # the log for t_half >= 1e-4, growing as 1e-4 / t_half below that, which is
+  # what the linear floor amounted to. It now stops growing at 120 * eps_rel
+  # (about 7e-4, reached near t_half = 8e-7). Measured against a Richardson
+  # oracle over 1096 cells, holding the step at eps_rel everywhere instead
+  # lost digits in 18 cells that agreed before: far below 1e-4 the phase is
+  # close to saturated, its values carry rounding noise, and the smaller
+  # step divides that noise by less. The cap keeps all of them.
+  #
+  # The quotient divides by the log spacing of the two points as they were
+  # actually formed, not by the nominal 2 * h. They are the same to rounding
+  # until t_half is subnormal, where the points are rounded to a coarse grid:
+  # at t_half = 1e-320 the nominal divisor put the derivative 32% off.
+  # Where t_half has no bits left to move at all (below about 3e-321) the
+  # two points coincide, and where the upper point overflows (t_half within
+  # a step of the largest double) the spacing is infinite. Either way the
+  # quotient would be a clean zero for a derivative that is not zero, so NaN
+  # is returned there, as for g3's tau.
+  #
+  # A "hazard" phase far past saturation used to defeat any step: its value,
+  # -log(1 - G), was formed from 1 - G and had no digits left once G neared
+  # 1, so the difference was noise and then exactly 0 (at nu = 1, m = 1 and
+  # times of order 1: up to 60% off at t_half = exp(-30), 0 from exp(-34)).
+  # Its value now comes from hzr_decompos()'s log_surv, which keeps its
+  # digits there (#578).
+  h_lt <- eps_rel * min(max(1, 1e-4 / t_half), 120)
+  th_plus  <- t_half * exp(h_lt)
+  th_minus <- t_half * exp(-h_lt)
+  span <- log(th_plus) - log(th_minus)
+  d_plus  <- perturb_decompos(th_plus, nu, m)
+  d_minus <- perturb_decompos(th_minus, nu, m)
+  if (is.finite(span) && span > 0 && !is.null(d_plus) && !is.null(d_minus)) {
     e_plus  <- extract(d_plus, type)
     e_minus <- extract(d_minus, type)
-    dPhi_dt_half <- (e_plus$Phi - e_minus$Phi) / (2 * h_th)
-    dphi_dt_half <- (e_plus$phi - e_minus$phi) / (2 * h_th)
+    dPhi_dlog_thalf <- (e_plus$Phi - e_minus$Phi) / span
+    dphi_dlog_thalf <- (e_plus$phi - e_minus$phi) / span
   } else {
-    # One-sided fallback
-    if (!is.null(d_plus)) {
-      e_plus <- extract(d_plus, type)
-      dPhi_dt_half <- (e_plus$Phi - base$Phi) / h_th
-      dphi_dt_half <- (e_plus$phi - base$phi) / h_th
-    } else {
-      dPhi_dt_half <- rep(0, n)
-      dphi_dt_half <- rep(0, n)
-    }
+    dPhi_dlog_thalf <- rep(NaN, n)
+    dphi_dlog_thalf <- rep(NaN, n)
   }
-  # Chain rule: d/d(log_t_half) = t_half * d/d(t_half)
-  dPhi_dlog_thalf <- t_half * dPhi_dt_half
-  dphi_dlog_thalf <- t_half * dphi_dt_half
 
   # Derivative w.r.t. nu
   h_nu <- eps_rel * max(abs(nu), 1)
@@ -612,11 +1053,40 @@ hzr_phase_cumhaz <- function(time, t_half = 1, nu = 1, m = 0,
     dphi_dnu <- rep(0, n)
   }
 
-  # Derivative w.r.t. m
+  # Derivative w.r.t. m.  hzr_decompos() changes formula at m = 0, and the two
+  # sides do not join smoothly: m >= 0 is one smooth family (Case 1L is the
+  # m -> 0+ limit of Case 1), while Case 2 meets it in a |m|^nu cusp.  A
+  # stencil straddling 0 differences two branches and returns neither side's
+  # derivative -- +8.4 against a true -20.2 at m = 2.9e-6.  SAS/C never meets
+  # this: it estimates log|M| with the sign fixed at setup (hzd_early_t2p.c),
+  # so M cannot reach or cross 0.  Here the stencil keeps the sign of m
+  # instead.  For m < 0 the step is capped at 1% of |m|, because the cusp
+  # varies on the scale of |m|, and floored at 1e-10 so rounding stays
+  # bounded as m -> 0-.  A stencil that would still reach 0 goes one-sided
+  # and second order: forward from m >= 0 (m = 0 itself takes that side),
+  # backward from m < 0.
   h_m <- eps_rel * max(abs(m), 1)
-  d_plus  <- perturb_decompos(t_half, nu, m + h_m)
-  d_minus <- perturb_decompos(t_half, nu, m - h_m)
-  if (!is.null(d_plus) && !is.null(d_minus)) {
+  if (m < 0) h_m <- min(h_m, max(0.01 * abs(m), 1e-10))
+  # +1: forward from m >= 0; -1: backward from m < 0; 0: central.
+  side <- if (m >= 0 && m - h_m < 0) {
+    1
+  } else if (m < 0 && m + h_m >= 0) {
+    -1
+  } else {
+    0
+  }
+  d_plus  <- if (side < 0) NULL else perturb_decompos(t_half, nu, m + h_m)
+  d_minus <- if (side > 0) NULL else perturb_decompos(t_half, nu, m - h_m)
+  d_far   <- if (side != 0) {
+    perturb_decompos(t_half, nu, m + 2 * side * h_m)
+  }
+  d_near  <- if (side > 0) d_plus else d_minus
+  if (side != 0 && !is.null(d_near) && !is.null(d_far)) {
+    e_near  <- extract(d_near, type)
+    e_far   <- extract(d_far, type)
+    dPhi_dm <- side * (-3 * base$Phi + 4 * e_near$Phi - e_far$Phi) / (2 * h_m)
+    dphi_dm <- side * (-3 * base$phi + 4 * e_near$phi - e_far$phi) / (2 * h_m)
+  } else if (!is.null(d_plus) && !is.null(d_minus)) {
     e_plus  <- extract(d_plus, type)
     e_minus <- extract(d_minus, type)
     dPhi_dm <- (e_plus$Phi - e_minus$Phi) / (2 * h_m)
@@ -649,7 +1119,7 @@ hzr_phase_cumhaz <- function(time, t_half = 1, nu = 1, m = 0,
 
 #' Instantaneous hazard contribution from a single phase
 #'
-#' Computes \eqn{\phi_j(t) = d\Phi_j/dt} for one phase -- the derivative of
+#' Computes \eqn{\phi_j(t) = d\Phi_j/dt} for one phase, the derivative of
 #' the cumulative hazard contribution returned by [hzr_phase_cumhaz()].
 #'
 #' @inheritParams hzr_phase_cumhaz
@@ -681,7 +1151,11 @@ hzr_phase_hazard <- function(time, t_half = 1, nu = 1, m = 0,
     return(rep(1, length(time)))
   }
 
-  d <- hzr_decompos(time, t_half = t_half, nu = nu, m = m)
+  d <- if (type == "cdf") {
+    .hzr_decompos_cdf(time, t_half = t_half, nu = nu, m = m)
+  } else {
+    hzr_decompos(time, t_half = t_half, nu = nu, m = m)
+  }
 
   switch(type,
     cdf    = d$g,

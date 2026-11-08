@@ -1,3 +1,7 @@
+# Too slow for the CRAN check time budget; runs on CI and locally.
+# See "Where the check's time actually goes" in AGENTS.md.
+skip_on_cran()
+
 # `.fit_driver_base()` lives in helper-stepwise.R (auto-sourced by
 # testthat) so it can be shared with the integration tests.
 
@@ -252,4 +256,210 @@ test_that("stepwise_trace returns the captured console lines", {
 test_that("stepwise_trace rejects non-hzr_stepwise input", {
   expect_error(stepwise_trace(list()),
                "must be an `hzr_stepwise` object")
+})
+
+
+# Score criterion -----------------------------------------------------------
+
+test_that("hzr_stepwise defaults to criterion = 'score'", {
+  expect_identical(eval(formals(hzr_stepwise)$criterion)[1], "score")
+})
+
+test_that("hzr_stepwise(criterion = 'score') selects without refitting candidates", {
+  skip_if_not_installed("numDeriv")
+  obj <- .fit_driver_base()
+  res <- hzr_stepwise(
+    obj$fit, scope = ~ x1 + x2 + x3 + x4, data = obj$data,
+    criterion = "score", direction = "forward", trace = FALSE
+  )
+  expect_s3_class(res, "hzr_stepwise")
+  expect_true(nrow(res$steps) > 0)
+  expect_identical(res$steps$variable[1], "x1")
+  expect_true(all(res$steps$df == 1L))
+  # The score path reports no dAIC: there is no candidate refit to take it from.
+  expect_true(all(is.na(res$steps$delta_aic)))
+})
+
+test_that("criterion = 'wald' still reproduces the previous behaviour", {
+  obj <- .fit_driver_base()
+  res <- hzr_stepwise(
+    obj$fit, scope = ~ x1 + x2 + x3 + x4, data = obj$data,
+    criterion = "wald", direction = "forward", trace = FALSE
+  )
+  expect_s3_class(res, "hzr_stepwise")
+  expect_identical(res$steps$variable[1], "x1")
+})
+
+test_that("a scope naming a nonexistent column warns under both criteria", {
+  # NEWS claims a mistyped scope column "still surfaces once, up front" --
+  # and hzr_bootstrap()'s pre-loop scope validation (see
+  # test-diagnostics.R's "hzr_bootstrap scope with a nonexistent column
+  # warns but does not raise") relies on hzr_stepwise() warning here rather
+  # than silently dropping the candidate. Confirm the score path matches
+  # the pre-existing wald behaviour instead of staying silent.
+  skip_if_not_installed("numDeriv")
+  obj <- .fit_driver_base()
+
+  expect_warning(
+    res_wald <- hzr_stepwise(
+      obj$fit, scope = c("x1", "not_a_real_column"), data = obj$data,
+      criterion = "wald", direction = "forward", trace = FALSE
+    ),
+    "not_a_real_column"
+  )
+  expect_false("not_a_real_column" %in% res_wald$steps$variable)
+
+  expect_warning(
+    res_score <- hzr_stepwise(
+      obj$fit, scope = c("x1", "not_a_real_column"), data = obj$data,
+      criterion = "score", direction = "forward", trace = FALSE
+    ),
+    "not_a_real_column"
+  )
+  expect_false("not_a_real_column" %in% res_score$steps$variable)
+})
+
+test_that("criterion = 'score' rejects a non-converged base up front", {
+  data(avc)
+  avc <- na.omit(avc)
+  # One iteration from a real start: the optimizer runs and stops short, so
+  # the base has coefficients but did not converge. (This used to omit theta,
+  # which never ran the optimizer at all -- converged NA, not FALSE -- and
+  # hazard() now refuses that call.)
+  base_bad <- suppressWarnings(
+    hazard(survival::Surv(int_dead, dead) ~ age, data = avc,
+           dist = "weibull", fit = TRUE, theta = c(0.5, 1, 0),
+           control = list(maxit = 1))
+  )
+  expect_identical(base_bad$fit$converged, FALSE)
+  expect_length(base_bad$fit$theta, 3L)
+
+  expect_error(
+    hzr_stepwise(base_bad, scope = ~ age + mal, data = avc,
+                 criterion = "score", direction = "forward", trace = FALSE),
+    "did not converge"
+  )
+
+  # A candidate refits under the base's control (#688), so its maxit = 1
+  # stops the candidate short too, and the screen records the failure.
+  stuck <- suppressWarnings(
+    hzr_stepwise(base_bad, scope = ~ age + mal, data = avc,
+                 criterion = "wald", direction = "forward", trace = FALSE)
+  )
+  expect_length(stuck$criteria$refit_failures, 1L)
+  expect_length(stuck$steps$variable[stuck$steps$action == "enter"], 0L)
+
+  # wald refits each candidate from the call and tolerates the bad base once
+  # the refits may converge. Assert the screen tested something: a screen
+  # whose refits all failed also returns without error.
+  res <- hzr_stepwise(base_bad, scope = ~ age + mal, data = avc,
+                      criterion = "wald", direction = "forward",
+                      trace = FALSE, control = list(maxit = 100))
+  expect_length(res$criteria$refit_failures, 0L)
+  expect_identical(res$steps$variable[res$steps$action == "enter"], "mal")
+})
+
+# delta AIC is the candidate's AIC minus the base's, so a base that stopped
+# short of its maximum hands every candidate the shortfall: pure noise
+# entered at delta AIC -16.5 from this base (-249 from maxit = 1).
+.sw_noise_data <- function() {
+  set.seed(5)
+  n <- 300
+  noise <- stats::rnorm(n)
+  noise2 <- stats::rnorm(n)
+  t <- stats::rweibull(n, shape = 1.5, scale = 2)
+  data.frame(time = pmin(t, 3), dead = as.integer(t <= 3),
+             noise = noise, noise2 = noise2)
+}
+
+test_that("criterion = 'aic' rejects a non-converged base up front", {
+  d <- .sw_noise_data()
+  base_bad <- suppressWarnings(
+    hazard(survival::Surv(time, dead) ~ 1, data = d, dist = "weibull",
+           theta = c(5, 0.5), control = list(maxit = 5), fit = TRUE)
+  )
+  # Premise: the optimizer ran and stopped short.
+  expect_identical(base_bad$fit$converged, FALSE)
+  expect_length(base_bad$fit$theta, 2L)
+  for (dir in c("forward", "both")) {
+    expect_error(
+      hzr_stepwise(base_bad, scope = ~ noise + noise2, data = d,
+                   criterion = "aic", direction = dir, trace = FALSE),
+      "criterion = 'aic' requires a converged base model"
+    )
+  }
+  # A backward screen takes no scope; it drops from the base's own terms.
+  full_bad <- suppressWarnings(
+    hazard(survival::Surv(time, dead) ~ noise + noise2, data = d,
+           dist = "weibull", theta = c(5, 0.5, 0, 0),
+           control = list(maxit = 5), fit = TRUE)
+  )
+  expect_identical(full_bad$fit$converged, FALSE)
+  expect_error(
+    hzr_stepwise(full_bad, data = d, criterion = "aic",
+                 direction = "backward", trace = FALSE),
+    "criterion = 'aic' requires a converged base model"
+  )
+
+  # Control: the same base run to convergence screens, and enters no noise.
+  base_ok <- suppressWarnings(
+    hazard(survival::Surv(time, dead) ~ 1, data = d, dist = "weibull",
+           theta = c(5, 0.5), fit = TRUE)
+  )
+  expect_identical(base_ok$fit$converged, TRUE)
+  res <- suppressWarnings(
+    hzr_stepwise(base_ok, scope = ~ noise + noise2, data = d,
+                 criterion = "aic", direction = "forward", trace = FALSE)
+  )
+  expect_length(res$criteria$refit_failures, 0L)
+  expect_identical(sum(res$steps$action == "enter"), 0L)
+})
+
+test_that("criterion = 'wald' rejects a non-converged base it would drop from", {
+  # A Wald entry is tested at the candidate's own converged refit, so a
+  # forward screen tolerates the bad base (see above). A removal is tested on
+  # the current model's own estimates and variance, which for the first step
+  # are the base's, at a point the optimizer had not finished with.
+  data(avc)
+  avc <- na.omit(avc)
+  base_bad <- suppressWarnings(
+    hazard(survival::Surv(int_dead, dead) ~ age + mal, data = avc,
+           dist = "weibull", fit = TRUE, theta = c(0.5, 1, 0, 0),
+           control = list(maxit = 1))
+  )
+  expect_identical(base_bad$fit$converged, FALSE)
+  for (dir in c("backward", "both")) {
+    expect_error(
+      hzr_stepwise(base_bad, data = avc, criterion = "wald",
+                   direction = dir, trace = FALSE),
+      "direction = '.*' requires a converged base model"
+    )
+  }
+})
+
+test_that("a two-level factor candidate is tested by wald and refused by score", {
+  skip_if_not_installed("numDeriv")
+  obj <- .fit_driver_base()
+  obj$data$fac <- factor(ifelse(obj$data$x2 > 0, "hi", "lo"))
+
+  # Wald refits the candidate and tests its one column, `faclo`. It used to
+  # look the coefficient up as `fac`, find nothing, and stop -- while the
+  # score refusal below names `criterion = "wald"` as the way through.
+  direct <- hazard(Surv(time, status) ~ fac, data = obj$data,
+                   theta = c(0.5, 1, 0), dist = "weibull", fit = TRUE)
+  expect_identical(colnames(direct$data$x), "faclo")
+  z <- unname(stats::coef(direct)[3] / sqrt(stats::vcov(direct)[3, 3]))
+  step <- .hzr_stepwise_forward_step(obj$fit, scope = ~ fac, data = obj$data,
+                                     criterion = "wald", slentry = 0.05)
+  # The refit is warm-started and `direct` is not, so they stop at slightly
+  # different points on this near-null effect (about 2.5e-4 apart in z).
+  expect_equal(step$all_scores$stat[step$all_scores$variable == "fac"], z,
+               tolerance = 1e-3)
+
+  # Score must not silently return NA and drop the candidate on the floor.
+  expect_error(
+    hzr_stepwise(obj$fit, scope = ~ fac, data = obj$data,
+                 criterion = "score", direction = "forward", trace = FALSE),
+    "not numeric"
+  )
 })

@@ -14,6 +14,7 @@
   weights = NULL,
   control = list(),
   phases,
+  objective = c("likelihood", "sas"),
   formula_global = NULL,
   data = NULL
 )
@@ -23,7 +24,9 @@
 
 \item{status}{Numeric event indicator vector.}
 
-\item{time_lower}{Optional lower bounds for interval censoring.}
+\item{time_lower}{Optional lower bounds: the counting-process ENTRY time
+on a status 0/1 row when 0 < time_lower < time (left truncation), and the
+interval's lower bound on a status-2 row.}
 
 \item{time_upper}{Optional upper bounds for left/interval censoring.}
 
@@ -35,6 +38,9 @@ If NULL, assembled automatically from phase specs.}
 \item{control}{Named list of control options.}
 
 \item{phases}{Named list of validated \code{hzr_phase} objects.}
+
+\item{objective}{Which interval-censored contribution to accumulate;
+see \code{.hzr_logl_interval()}.}
 
 \item{formula_global}{The global formula (used when phases have no
 phase-specific formula).}

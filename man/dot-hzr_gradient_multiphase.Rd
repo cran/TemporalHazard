@@ -15,6 +15,9 @@
   phases,
   covariate_counts,
   x_list,
+  objective = c("likelihood", "sas"),
+  sanitize = TRUE,
+  phase_cache = NULL,
   ...
 )
 }
@@ -26,7 +29,11 @@
 \item{status}{Numeric event indicator: 1 = event, 0 = right-censored,
 -1 = left-censored, 2 = interval-censored.}
 
-\item{time_lower}{Optional lower bounds for interval censoring.}
+\item{time_lower}{Optional numeric vector: the interval lower bound on
+status-2 rows, and the counting-process entry time on status 0/1 rows
+with \verb{0 < time_lower < time}. \code{time_lower == time} on a status 0/1 row
+means no entry (the mixed-interval layout); see
+\code{.hzr_multiphase_entry()}.}
 
 \item{time_upper}{Optional upper bounds for left/interval censoring.}
 
@@ -38,16 +45,33 @@
 
 \item{x_list}{Named list of per-phase design matrices.}
 
+\item{objective}{Which interval-censored contribution to accumulate;
+see \code{.hzr_logl_interval()}. Exact-event, right-censored and left-censored
+rows are unaffected.}
+
+\item{sanitize}{Logical; \code{FALSE} returns \code{NA} where the default returns 0.
+Used by SAS/C's acceptance test, which must not read a zero it could not
+compute as a small gradient.}
+
+\item{phase_cache}{\code{NULL}, or an environment: the per-phase quantities,
+which do not read \code{status}, are kept there by the first call and reused
+by a later one with the same \code{theta}, times, entry times, \code{phases},
+\code{covariate_counts} and \code{x_list}. The Conservation of Events gradient
+passes one to its two score evaluations (#631).}
+
 \item{...}{Ignored.}
 }
 \value{
-Numeric vector of length \code{length(theta)} -- the gradient.
-Returns a zero vector if any component is non-finite (guards optimizer).
+Numeric vector of length \code{length(theta)}: the gradient.
+With \code{sanitize = TRUE} (the default) a component that cannot be evaluated
+is 0, and so is the whole vector at an infeasible point (guards the
+optimizer); with \code{sanitize = FALSE} those are \code{NA}.
 }
 \description{
 Computes the score vector \eqn{d\ell / d\theta} using analytic chain-rule
-formulas for \code{log_mu} and \code{beta} parameters, and central-difference
+formulas for \code{log_mu} and \code{beta} parameters, and finite-difference
 derivatives (via \code{.hzr_phase_derivatives()}) for shape parameters
-(\code{log_t_half}, \code{nu}, \code{m}).
+(\code{log_t_half}, \code{nu}, \code{m}): central, except that the \code{m} stencil stays on
+the side of \code{m} near \code{m = 0}, where the phase family has a cusp.
 }
 \keyword{internal}
